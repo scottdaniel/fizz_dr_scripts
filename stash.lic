@@ -1,0 +1,288 @@
+=begin
+  stash.lic
+
+  Goes home (;go2 14665, MOVE ARCH, unless you're already inside), stashes
+  things out of your containers, and leaves you inside the house. ;unstash
+  gets it all back.
+
+  Usage:
+    ;stash crafting        # forging and shaping gear
+    ;stash forging         # just forging gear
+    ;stash shaping         # just shaping gear
+    ;stash all             # crafting gear plus your extras
+    ;stash add <item>      # add something to your extras (taps it first to check the name)
+    ;stash remove <item>   # take something off your extras
+    ;stash list            # show your gear, your extras, and what's stashed right now
+
+  Crafting gear is forging_tools and shaping_tools from your yaml, plus the
+  books, logbooks and supplies in SUPPLIES below. It comes out of your
+  crafting_container, one of each.
+
+  Extras are your own list, kept in EXTRAS. It starts as codex, textbook and
+  contract. Every one of them you're carrying gets stashed, from whichever
+  container it's in.
+
+  Each item tries STASH_SPOTS in order: under the bed, on the wall, in the
+  wall, on the bookcase, on the table. A spot that's full, or that the game
+  doesn't take, is skipped for the rest of the run. Anything that won't fit
+  anywhere goes back where it came from.
+
+  What went where is written to STASHED so ;unstash gets back exactly those
+  things and puts them back where they came from.
+=end
+
+HOME_ROOM = 14_665
+HOME_TITLE = /Visenyia's Home/
+
+# What's stashed right now and where. Shared with unstash.
+STASHED = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
+# Your extras, changed with ;stash add and ;stash remove
+EXTRAS = File.join(DATA_DIR, XMLData.game, Char.name, 'stash-extras.yaml')
+DEFAULT_EXTRAS = %w[codex textbook contract].freeze
+
+# Tried in this order
+STASH_SPOTS = ['under bed', 'on wall', 'in wall', 'on bookcase', 'on table'].freeze
+
+# Crafting gear besides each discipline's tools from your yaml
+SUPPLIES = {
+  'forging' => [
+    'weapon.book', # book of apprentice weaponsmithing instructions
+    'forging logbook',
+    'oil', # flask of oil
+    'flux' # borax flux
+  ],
+  'shaping' => [
+    'shap.book', # book of apprentice shaping instructions
+    'engineering logbook'
+  ]
+}.freeze
+
+# bput returns only the matched text, so these match the whole line
+GET_SUCCESS = [/^You get .*/, /^You pick up .*/].freeze
+PUT_SUCCESS = [/^You put .*/].freeze
+TAP_SUCCESS = [/^You tap\s(?!into).*/, /^As you tap .*/, /^You (?:thump|drum) your finger.*/].freeze
+NOT_FOUND = [/^What were you referring to/, /^I could not find/, /^I don't know what you are referring to/].freeze
+# The spot is full: skip it for everything else
+SPOT_FULL = [/no room/i, /isn't any more room/i, /completely full/i].freeze
+# Just this item won't go there
+PUT_FAILURE = [/^You can't/, /^You must/, /^Weirdly, you can't/, /is too .* to (fit|hold)/, /to fit in the/].freeze
+
+# "You put a book of apprentice shaping instructions under the bed."
+PUT_NAME = /^You put (?:a|an|some|the|your) (.+) (?:under|on|in) the /
+# "You get a paper-wrapped textbook from inside your grey rucksack."
+GET_SOURCE = /from inside your (.+?)\.$/
+# "You tap some bundling rope inside your grey rucksack." or "... that you are holding."
+TAP_NAME = /^You tap (?:a|an|some|the|your) (.+?)(?: inside your (.+?)| that you are (\w+))?\.$/
+
+def load_yaml(path, default)
+  File.exist?(path) ? YAML.safe_load(File.read(path)) || default : default
+end
+
+def save_yaml(path, data)
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, data.to_yaml)
+end
+
+def load_extras
+  load_yaml(EXTRAS, DEFAULT_EXTRAS).dup
+end
+
+def home?
+  # room_title missed the house once when already inside; room_name is the
+  # "[Visenyia's Home]" line itself, so check both
+  [XMLData.room_title, XMLData.room_name].any? { |title| title.to_s =~ HOME_TITLE }
+end
+
+def go_home
+  return true if home?
+  return false unless DRCT.walk_to(HOME_ROOM)
+
+  DRC.bput('move arch', /^You walk in/, /^What were you referring to/, /^You can't/, /^You don't/)
+  10.times do
+    return true if home?
+
+    pause 0.5
+  end
+  false
+end
+
+def hands_empty?
+  DRC.right_hand.nil? && DRC.left_hand.nil?
+end
+
+# The hand display can lag the game text by a moment
+def settle
+  10.times do
+    return true if yield
+
+    pause 0.1
+  end
+  false
+end
+
+def gear_for(disciplines, settings)
+  tools = { 'forging' => settings.forging_tools.to_a, 'shaping' => settings.shaping_tools.to_a }
+  disciplines.flat_map { |discipline| tools[discipline] + SUPPLIES[discipline] }.uniq
+end
+
+# Gets the item into your hand, from the container if one is given. Returns
+# the GET line, or nil if you don't have one.
+def take_out(item, container)
+  from = container ? " from my #{container}" : ''
+  result = DRC.bput("get my #{item}#{from}", *GET_SUCCESS, *NOT_FOUND, *DRCI::GET_ITEM_FAILURE_PATTERNS)
+  result if GET_SUCCESS.any? { |pattern| result =~ pattern } && settle { !hands_empty? }
+end
+
+# Puts the item in hand into the first open spot. Returns [spot, full item
+# name], or nil if nothing took it. Spots that are full or don't work go in
+# closed_spots (spot => why) so the rest of the run skips them.
+def put_in_spot(item, closed_spots)
+  (STASH_SPOTS - closed_spots.keys).each do |spot|
+    result = DRC.bput("put my #{item} #{spot}", *PUT_SUCCESS, *SPOT_FULL, *NOT_FOUND, *PUT_FAILURE)
+    return [spot, result[PUT_NAME, 1]] if PUT_SUCCESS.any? { |pattern| result =~ pattern }
+
+    if SPOT_FULL.any? { |pattern| result =~ pattern }
+      closed_spots[spot] = 'full'
+    elsif result.empty? || NOT_FOUND.any? { |pattern| result =~ pattern }
+      # You're holding the item, so the game doesn't know the spot
+      closed_spots[spot] = "didn't work"
+    end
+  end
+  nil
+end
+
+# Back where it came from, then the crafting container, then plain STOW
+def put_back(item, *places)
+  return if DRCI.put_away_item?(item, places.compact.uniq + [nil])
+
+  DRC.message("stash: couldn't put #{item} back. It's still in your hand.")
+  exit
+end
+
+# gear comes out of the crafting container, one of each; extras come from
+# anywhere, every one you have
+def stash_items(gear, extras, container)
+  unless hands_empty?
+    DRC.message('stash: empty your hands first.')
+    exit
+  end
+
+  unless go_home
+    DRC.message("stash: couldn't get into the house from room #{HOME_ROOM}. " \
+                "Room title: #{XMLData.room_title.inspect}, room name: #{XMLData.room_name.inspect}")
+    exit
+  end
+
+  stashed = load_yaml(STASHED, [])
+  closed_spots = {}
+  placed = Hash.new { |hash, spot| hash[spot] = [] }
+  left_over = []
+
+  jobs = gear.map { |item| [item, container, true] } + extras.map { |item| [item, nil, false] }
+  jobs.each do |item, take_from, just_one|
+    if (STASH_SPOTS - closed_spots.keys).empty?
+      left_over << item if DRCI.exists?(item, take_from)
+      next
+    end
+
+    while (line = take_out(item, take_from))
+      from = line[GET_SOURCE, 1] || take_from
+      spot, name = put_in_spot(item, closed_spots)
+      unless spot
+        left_over << item
+        put_back(item, from, container)
+        break
+      end
+
+      placed[spot] << item
+      stashed << { 'item' => item, 'name' => name, 'spot' => spot, 'from' => from }
+      save_yaml(STASHED, stashed)
+      break if just_one
+    end
+  end
+
+  placed.each { |spot, items| DRC.message("stash: #{spot}: #{items.join(', ')}") }
+  DRC.message('stash: nothing to stash.') if placed.empty? && left_over.empty?
+  DRC.message("stash: stopped using: #{closed_spots.map { |spot, why| "#{spot} (#{why})" }.join(', ')}") unless closed_spots.empty?
+  DRC.message("stash: no room, kept: #{left_over.uniq.join(', ')}") unless left_over.empty?
+end
+
+def add_extra(item)
+  if item.empty?
+    DRC.message('stash: add what? For example: ;stash add gem pouch')
+    return
+  end
+
+  extras = load_extras
+  if extras.include?(item)
+    DRC.message("stash: #{item} is already on your extras.")
+    return
+  end
+
+  result = DRC.bput("tap my #{item}", *TAP_SUCCESS, *NOT_FOUND)
+  unless TAP_SUCCESS.any? { |pattern| result =~ pattern }
+    DRC.message("stash: TAP couldn't find a \"#{item}\" on you, so it's not added. Check the name and try again.")
+    return
+  end
+
+  name, container, state = result.match(TAP_NAME)&.captures
+  if state == 'wearing'
+    DRC.message("stash: you're wearing the #{name}. Stash only takes things you carry, so it's not added.")
+    return
+  end
+
+  extras << item
+  save_yaml(EXTRAS, extras)
+  where = if container then ", in your #{container}"
+          elsif state then ", that you're #{state}"
+          end
+  DRC.message("stash: added #{item} (#{name || result}#{where}). ;stash all will stash every one you have.")
+end
+
+def remove_extra(item)
+  extras = load_extras
+  if extras.delete(item)
+    save_yaml(EXTRAS, extras)
+    DRC.message("stash: removed #{item}. Extras now: #{extras.empty? ? 'none' : extras.join(', ')}")
+  else
+    DRC.message("stash: #{item.empty? ? 'remove what?' : "#{item} isn't on your extras."} Extras: #{extras.join(', ')}")
+  end
+end
+
+def show_list(settings)
+  extras = load_extras
+  DRC.message("stash: crafting gear (;stash crafting): #{gear_for(%w[forging shaping], settings).join(', ')}")
+  DRC.message("stash: extras (;stash all adds these): #{extras.empty? ? 'none' : extras.join(', ')}")
+
+  stashed = load_yaml(STASHED, [])
+  if stashed.empty?
+    DRC.message('stash: nothing is stashed right now.')
+    return
+  end
+
+  stashed.group_by { |entry| entry['spot'] }.each do |spot, entries|
+    DRC.message("stash: stashed #{spot}: #{entries.map { |entry| entry['name'] || entry['item'] }.join(', ')}")
+  end
+end
+
+settings = get_settings
+command = Script.current.vars[1].to_s.downcase
+item = Script.current.vars[2..].to_a.compact.join(' ').downcase.strip
+crafting_gear = gear_for(%w[forging shaping], settings)
+
+case command
+when 'crafting'
+  stash_items(crafting_gear, [], settings.crafting_container)
+when 'forging', 'shaping'
+  stash_items(gear_for([command], settings), [], settings.crafting_container)
+when 'all'
+  stash_items(crafting_gear, load_extras - crafting_gear, settings.crafting_container)
+when 'add'
+  add_extra(item)
+when 'remove'
+  remove_extra(item)
+when 'list'
+  show_list(settings)
+else
+  DRC.message('stash: use ;stash crafting, forging, shaping, all, add <item>, remove <item>, or list.')
+end

@@ -1,0 +1,46 @@
+=begin
+  2hourquit.lic
+
+  Exits the game two hours after this script is started.
+
+  Usage:
+    ;2hourquit          # quits 2 hours from now
+    ;2hourquit 90       # quits 90 minutes from now
+=end
+
+no_pause_all
+no_kill_all
+
+minutes = (Script.current.vars[1] || '120').to_f
+minutes = 120.0 if minutes <= 0
+
+quit_at = Time.now + (minutes * 60)
+
+echo "2hourquit started - will exit the game at #{quit_at.strftime('%H:%M:%S')} (#{minutes.round} minutes from now)"
+
+loop do
+  remaining = quit_at - Time.now
+  break if remaining <= 0
+
+  # Sleep in reasonable chunks so ;kill 2hourquit stays responsive
+  pause [remaining, 30].min
+end
+
+echo "2hourquit - time elapsed, disengaging and exiting the game at #{Time.now.strftime('%H:%M:%S')}"
+
+# Get out of combat / roundtime before quitting, then send exit. Retry a few
+# times in case combat or lingering RT defers the logout; once the frontend
+# disconnects the extra fputs are harmless no-ops.
+5.times do |attempt|
+  begin
+    DRC.retreat
+    waitrt?
+    DRC.fix_standing
+  rescue StandardError => e
+    echo "2hourquit - retreat/stand error (ignored): #{e.message}"
+  end
+
+  echo "2hourquit - exit attempt #{attempt + 1}"
+  fput('exit')
+  pause 15
+end

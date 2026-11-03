@@ -1,0 +1,116 @@
+=begin
+  sell-gems.lic
+
+  Walks to the nearest gem shop, sells every loose gem (and gem-like material
+  such as coral and nuggets) from your rucksack and scavenger's belt, then
+  walks back to where you started.
+
+  Gems are found by LOOKing in each container and matching item nouns against
+  gem_nouns in data/base-items.yaml, plus anything listed under a "gem"
+  category and the EXTRA_NOUNS below.
+
+  Usage:
+    ;sell-gems                        # rucksack and scav belt
+    ;sell-gems backpack "gem pouch"   # any containers you name instead
+=end
+
+no_kill_all
+
+DEFAULT_CONTAINERS = ['rucksack', 'scav belt'].freeze
+
+# Sellable at a gem shop but not in gem_nouns
+EXTRA_NOUNS = %w[nugget].freeze
+
+GET_SUCCESS = [/^You get/, /^You pick up/, /^You remove/].freeze
+GET_FAILURE = [/^What were you referring to/, /^I could not find/, /^You need a free hand/,
+               /^You can't/].freeze
+
+def in_hand?(noun)
+  [DRC.right_hand, DRC.left_hand].compact.any? { |item| item =~ /\b#{Regexp.escape(noun)}\b/i }
+end
+
+# Returns [[category, item_description], ...] for a container. Handles both the
+# sorted format ("gem (53): tiny teal agate, ...") and the plain format
+# ("In the rucksack you see a tiny teal agate, a ... and a ...").
+def container_items(container)
+  lines = Lich::Util.issue_command("look in my #{container}",
+                                   /^(?:In the|There is nothing|What were you referring|That is closed|You can't)/,
+                                   timeout: 10, silent: true, quiet: true)
+  return [] unless lines
+
+  lines.map { |line| line.gsub(/<[^>]+>/, '').strip }.flat_map do |line|
+    if (match = line.match(/^([\w\s'-]+?) \(\d+\): (.+?)\.?$/))
+      match[2].split(/, /).map { |item| [match[1].downcase, item] }
+    elsif (match = line.match(/you see (.+)\.$/))
+      match[1].sub(/ and (?=(?:a|an|some) )/, ', ').split(/, /).map { |item| [nil, item] }
+    else
+      []
+    end
+  end
+end
+
+def noun_of(item)
+  item.sub(/\s*\(\d+\)\s*$/, '').split.last.to_s.downcase
+end
+
+def gem_nouns_in(container, gem_nouns)
+  container_items(container).filter_map do |category, item|
+    noun = noun_of(item)
+    noun if category == 'gem' || gem_nouns.include?(noun)
+  end.uniq
+end
+
+def sell_all(container, noun)
+  sold = 0
+  loop do
+    result = DRC.bput("get #{noun} from my #{container}", *GET_SUCCESS, *GET_FAILURE)
+    break unless GET_SUCCESS.any? { |pattern| result =~ pattern }
+
+    DRC.bput("sell my #{noun}", /Kronars|Lirums|Dokoras/, /not interested/, /isn't buying/,
+             /There is no one here/, /What were you referring to/, /^\S.*$/)
+    waitrt?
+    pause 0.5
+
+    if in_hand?(noun)
+      DRC.message("sell-gems: couldn't sell #{noun}, putting it back in #{container}.")
+      fput("put my #{noun} in my #{container}")
+      break
+    end
+
+    sold += 1
+  end
+  sold
+end
+
+containers = Script.current.vars[1..].to_a.compact
+containers = DEFAULT_CONTAINERS if containers.empty?
+
+unless DRC.right_hand.nil? && DRC.left_hand.nil?
+  DRC.message('sell-gems: empty your hands first.')
+  exit
+end
+
+gem_nouns = (get_data('items').gem_nouns + EXTRA_NOUNS).map(&:downcase)
+
+to_sell = containers.to_h { |container| [container, gem_nouns_in(container, gem_nouns)] }
+if to_sell.values.all?(&:empty?)
+  DRC.message('sell-gems: no gems found, nothing to do.')
+  exit
+end
+
+start_room = Room.current&.id
+
+DRC.wait_for_script_to_complete('go2', ['gemshop'])
+
+sold = 0
+to_sell.each do |container, nouns|
+  nouns.each { |noun| sold += sell_all(container, noun) }
+end
+
+DRC.message("sell-gems: sold #{sold} item(s).")
+
+if start_room
+  DRCT.walk_to(start_room)
+else
+  DRC.message('sell-gems: starting room unknown, staying at the gem shop.')
+end

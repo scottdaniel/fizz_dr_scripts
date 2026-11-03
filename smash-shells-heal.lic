@@ -1,0 +1,168 @@
+=begin
+  smash-shells-heal.lic
+
+  Fork of smash-shells.lic. Instead of walking off when you get hurt, it goes
+  to the healer's room, whispers to the healer, waits for the heal, and goes
+  back to smashing shells.
+
+  "Significantly wounded" means any of:
+    - bleeding
+    - vitality below HEAL_BELOW_VITALITY
+    - a fresh (non-scar) wound at WOUND_SEVERITY or worse, from HEALTH
+    - the shell box says you're too injured to play
+
+  Scars don't count: the healer can't take them, so they'd cause endless trips.
+
+  Original documentation: https://elanthipedia.play.net/Lich_script_repository#smash-shells
+
+  Usage:
+    ;smash-shells-heal
+=end
+
+HEAL_ROOM = 16_169
+HEALER = 'Azaylea'
+HEAL_COMMAND = 'whisper azay meow'
+
+HEAL_BELOW_VITALITY = 80
+# 3 is "cuts and bruises"; 1-2 are minor abrasions and scratches
+WOUND_SEVERITY = 3
+
+HEAL_TIMEOUT = 60
+MAX_HEAL_ATTEMPTS = 3
+HEALER_WAIT_LIMIT = 600
+
+Flags.add('shell-fragments', 'shell explodes')
+Flags.add('healed', 'The pain of your wounds abruptly ceases', 'but nothing else seems to happen',
+          'gradually ebbs away')
+
+settings = get_settings
+trash_items = settings.hollow_eve_junk.map { |x| /\b#{x}\b/i }
+hollow_eve_loot_container = settings.hollow_eve_loot_container
+
+def healer_here?
+  DRRoom.pcs.any? { |pc| pc.casecmp?(HEALER) }
+end
+
+def wounded_from_health?
+  health = DRCH.check_health
+  # Unreadable HEALTH output: play it safe and get healed
+  return true unless health.captured?
+  return true if health.bleeding?
+
+  health.wounds.any? { |severity, wounds| severity >= WOUND_SEVERITY && wounds.any? { |wound| !wound.scar? } }
+end
+
+def significantly_wounded?
+  checkbleeding || DRStats.health < HEAL_BELOW_VITALITY || wounded_from_health?
+end
+
+def wait_for_healer
+  waited = 0
+  until healer_here?
+    if waited >= HEALER_WAIT_LIMIT
+      DRC.message("*** #{HEALER} hasn't shown up in #{HEALER_WAIT_LIMIT / 60} minutes. Stopping. ***")
+      DRC.beep
+      exit
+    end
+    if (waited % 60).zero?
+      DRC.message("*** Waiting for #{HEALER} in room #{HEAL_ROOM}... ***")
+      DRC.beep
+    end
+    pause 5
+    waited += 5
+  end
+end
+
+def get_healed
+  DRC.message("*** Wounded! Heading to #{HEALER} for healing ***")
+  waitrt?
+  DRCT.walk_to(HEAL_ROOM)
+
+  MAX_HEAL_ATTEMPTS.times do
+    wait_for_healer
+    Flags.reset('healed')
+    case DRC.bput(HEAL_COMMAND, 'You whisper to', 'You quietly whisper to', 'Who are you trying to whisper to')
+    when 'Who are you trying to whisper to'
+      next
+    end
+    timeout = Time.now + HEAL_TIMEOUT
+    pause 1 until Flags['healed'] || Time.now > timeout
+    # Let any follow-up heals land before checking again
+    pause 5
+    return unless significantly_wounded?
+  end
+
+  DRC.message("*** Still wounded after #{MAX_HEAL_ATTEMPTS} tries with #{HEALER}. Stopping. ***")
+  DRC.beep
+  exit
+end
+
+before_dying do
+  Flags.delete('shell-fragments')
+  Flags.delete('healed')
+end
+
+DRC.message("*** Heading to grab a shell ***")
+
+get_healed if significantly_wounded?
+
+loop do
+  get_healed if checkbleeding || DRStats.health < HEAL_BELOW_VITALITY
+
+  DRCT.walk_to(16_236)
+  until checkright || checkleft
+    DRC.fix_standing
+    case DRC.bput('grab box', 'roundtime', 'You are too injured', 'Perhaps that would work better', 'when you have enough coins', 'You should clean your hands')
+    when 'You are too injured', 'You should clean your hands'
+      get_healed
+      DRCT.walk_to(16_236)
+    when 'when you have enough coins'
+      DRC.message("*** Out of money. Getting more! ***")
+      DRCT.walk_to(16_315)
+      case DRC.bput('withdraw 3 platinum', 'we are not lending money at this time', 'The clerk counts out')
+      when 'we are not lending money at this time'
+        exit
+      end
+      DRCT.walk_to(16_236)
+    end
+    pause 1
+    waitrt?
+  end
+
+  DRCT.walk_to(16_237)
+
+  case DRC.bput('break my shell', 'The shell', 'Break what', 'need a free hand', 'You should hold')
+  when 'need a free hand', 'Break what'
+    DRCI.stow_hands
+  end
+  pause
+
+  [DRC.left_hand, DRC.right_hand]
+    .compact
+    .each do |in_hand|
+    if in_hand
+      case in_hand
+      when *trash_items
+        DRC.bput("put my #{in_hand} in bucket", 'You put', 'You drop', 'What were', 'Stow what?')
+      else
+        # Coil rope so we can store it
+        if /\brope\b/ =~ in_hand
+          fput("coil my #{in_hand}")
+        end
+        if !DRCI.put_away_item?(in_hand, hollow_eve_loot_container)
+          DRC.message("*** The item is either too big to fit or no more room in the container(s)! ***")
+          DRC.beep
+          exit
+        end
+      end
+    end
+  end
+
+  waitrt?
+  next unless Flags['shell-fragments']
+
+  pause 4
+  DRC.wait_for_script_to_complete('tendme')
+  Flags.reset('shell-fragments')
+  get_healed if significantly_wounded?
+end

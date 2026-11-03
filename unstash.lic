@@ -1,0 +1,156 @@
+=begin
+  unstash.lic
+
+  The opposite of ;stash. Goes home (;go2 14665, MOVE ARCH, unless you're
+  already inside), gets back everything ;stash wrote down, and puts each thing
+  back in the container it came from (or your crafting_container if that
+  doesn't work). You're left inside the house when it's done (MOVE DOOR to
+  leave).
+
+  Only things ;stash wrote down come back, so whatever else you keep at home
+  (the metal clamps under the bed, the muracite tongs with icesteel clamps on
+  the wall) stays where it is. Each item's full name is checked when you
+  pick it up. If it's the wrong one, it goes back and stays on the list.
+
+  Items come back newest first, which is the order GET finds them in.
+  Anything that isn't there anymore is dropped from the list. If there's no
+  room to put something away, the rest stays stashed and on the list for
+  next time.
+
+  Usage:
+    ;unstash
+=end
+
+HOME_ROOM = 14_665
+HOME_TITLE = /Visenyia's Home/
+
+# What's stashed right now and where, written by ;stash
+STASH_LIST = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
+
+# bput returns only the matched text, so match the whole line to check the item name
+GET_SUCCESS = [/^You get .*/, /^You pick up .*/].freeze
+GET_MISSING = [/^What were you referring to/, /^I could not find/].freeze
+
+def load_stash_list
+  File.exist?(STASH_LIST) ? YAML.safe_load(File.read(STASH_LIST)) || [] : []
+end
+
+def save_stash_list(entries)
+  FileUtils.mkdir_p(File.dirname(STASH_LIST))
+  File.write(STASH_LIST, entries.to_yaml)
+end
+
+# room_title (from the window subtitle) missed the house once when already
+# inside; room_name is the "[Visenyia's Home]" line itself, so check both
+def home?
+  [XMLData.room_title, XMLData.room_name].any? { |title| title.to_s =~ HOME_TITLE }
+end
+
+def go_home
+  return true if home?
+  return false unless DRCT.walk_to(HOME_ROOM)
+
+  DRC.bput('move arch', /^You walk in/, /^What were you referring to/, /^You can't/, /^You don't/)
+  10.times do
+    return true if home?
+
+    pause 0.5
+  end
+  false
+end
+
+# How to GET from a spot the stash scripts used: "on wall" and "on bookcase"
+# as is, "in wall" as "from wall", "under bed" as "from under bed"
+def get_from(spot)
+  preposition, place = spot.split(' ', 2)
+  case preposition
+  when 'on' then spot
+  when 'in' then "from #{place}"
+  else "from #{spot}"
+  end
+end
+
+def hands_empty?
+  DRC.right_hand.nil? && DRC.left_hand.nil?
+end
+
+# The hand display can lag the game text by a moment
+def settle
+  10.times do
+    return true if yield
+
+    pause 0.1
+  end
+  false
+end
+
+# The GET line names this exact item, e.g. "You get some muracite tongs from
+# ..." and not "You get some muracite tongs with icesteel clamps from ...".
+def right_item?(result, name)
+  return true if name.nil?
+
+  result =~ /^You (?:get|pick up) (?:a|an|some|the|your) #{Regexp.escape(name)} (?:from|off)\b/
+end
+
+def put_back(item, spot)
+  DRC.bput("put my #{item} #{spot}", /^You put/, /^What were you referring to/, /no room/i, /^You can't/)
+  return true if settle { hands_empty? }
+
+  DRC.message("unstash: couldn't put #{item} back #{spot}. It's still in your hand.")
+  exit
+end
+
+# Returns :got, :missing, :wrong, :failed, or :container_full
+def fetch(entry, container)
+  item, name, spot = entry.values_at('item', 'name', 'spot')
+  result = DRC.bput("get #{item} #{get_from(spot)}", *GET_SUCCESS, *GET_MISSING, *DRCI::GET_ITEM_FAILURE_PATTERNS)
+  return :missing if GET_MISSING.any? { |pattern| result =~ pattern }
+  return :failed unless settle { !hands_empty? }
+
+  unless right_item?(result, name)
+    put_back(item, spot)
+    return :wrong
+  end
+
+  return :got if DRCI.put_away_item?(item, [entry['from'], container].compact.uniq)
+
+  put_back(item, spot)
+  :container_full
+end
+
+stash_list = load_stash_list
+if stash_list.empty?
+  DRC.message('unstash: nothing is stashed right now.')
+  exit
+end
+
+unless hands_empty?
+  DRC.message('unstash: empty your hands first.')
+  exit
+end
+
+unless go_home
+  DRC.message("unstash: couldn't get into the house from room #{HOME_ROOM}. " \
+              "Room title: #{XMLData.room_title.inspect}, room name: #{XMLData.room_name.inspect}")
+  exit
+end
+
+container = get_settings.crafting_container
+results = Hash.new { |hash, result| hash[result] = [] }
+
+(stash_list.size - 1).downto(0) do |index|
+  entry = stash_list[index]
+  result = fetch(entry, container)
+  results[result] << "#{entry['name'] || entry['item']} (#{entry['spot']})"
+  break if result == :container_full
+  next unless %i[got missing].include?(result)
+
+  stash_list.delete_at(index)
+  save_stash_list(stash_list)
+end
+
+DRC.message("unstash: got back: #{results[:got].join(', ')}") unless results[:got].empty?
+DRC.message("unstash: not there anymore, dropped from the list: #{results[:missing].join(', ')}") unless results[:missing].empty?
+DRC.message("unstash: found something else first, left it and kept on the list: #{results[:wrong].join(', ')}") unless results[:wrong].empty?
+DRC.message("unstash: couldn't pick up, kept on the list: #{results[:failed].join(', ')}") unless results[:failed].empty?
+DRC.message("unstash: no room to put #{results[:container_full].first} away. #{stash_list.size} item(s) still stashed and on the list.") unless results[:container_full].empty?
