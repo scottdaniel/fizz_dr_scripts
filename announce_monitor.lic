@@ -1,0 +1,255 @@
+=begin
+  announce_monitor.lic
+  Watches for the Hollow Eve festival's game-wide announcements and posts them
+  to a Discord webhook, so they reach your phone:
+    1) raffles, e.g. "We are ready to start a set of wonderfully free raffles! ..."
+    2) Limited Treasures: any announcement that names the shop (a restock, say)
+  Every message starts with the character's name, so one webhook can serve all
+  of your characters.
+
+  Usage:
+    ;announce_monitor          run the monitor (autostart it with
+                               ;autostart add announce_monitor)
+    ;announce_monitor setup    GTK window: webhook URL, which announcements to
+                               send, test button
+    ;announce_monitor test     send a test message to the webhook
+
+  The webhook URL is shared by all characters and saved in
+  <lich data dir>/announce_monitor.yaml (not in the scripts repo).
+
+  How it works: a downstream hook looks at every line the game sends. A line
+  that mentions raffles or Limited Treasures is sent on, unless it's only
+  something happening around you: room descriptions, chat channels, someone in
+  the room (or you) talking, raffle tickets, the raffle attendant and result
+  board, or anything at all while you're inside the Limited Treasures shop.
+  Lines that arrive within 2 seconds of each other go out as one message, and
+  a line already sent in the last 10 minutes isn't sent again.
+  Everything it sends is echoed in game, so a line that shouldn't have gone
+  out is easy to spot.
+=end
+
+require 'json'
+require 'net/http'
+require 'uri'
+require 'yaml'
+
+module AnnounceMonitor
+  SETTINGS_FILE = File.join(DATA_DIR, 'announce_monitor.yaml')
+  GATHER        = 2     # seconds to wait for more lines of the same announcement
+  REPEAT        = 600   # seconds before the same line is sent again
+  HOOK          = 'announce_monitor'
+
+  KINDS = {   # settings key => what the message is tagged, what the line mentions
+    'raffles'           => { label: 'Raffle', pattern: /\braffles?\b/i },
+    'limited_treasures' => { label: 'Limited Treasures', pattern: /\blimited\s+treasures?\b/i }
+  }.freeze
+
+  # Lines that mention a raffle but are just the raffle room going about its business
+  RAFFLE_ROOM = [
+    /raffle tickets?/i,                   # people getting and binning tickets, the RAFFLE TICKET banner
+    /\bAttendant\b/,                      # the attendant running a drawing
+    /result board/i,                      # winners going up on the board
+    /\A\*?\s*Raffle (?:Number|winners|\d)/   # reading your ticket or the board ("Raffle Number: 18.", "* Raffle 14 *")
+  ].freeze
+
+  # "On a black oak rack you see ...": looking at what's on or in something
+  CONTENTS    = /\A(?:On|In|Inside|Under|Behind|Atop) .*? you see /
+
+  CHAT_STREAM = /<pushStream id=["'](?:thoughts|chatter|lnet|speech|talk|whispers|conversation|ooc|familiar)["']/
+  ROOM_XML    = /roomDesc|roomName|<component id=["']room/
+  # "Remu says, ...", "Vekara says in a Siksrajan accent, ...", "You ask, ..."
+  SPEECH      = /\A(\w+)\b[^"]*?\b(?:says?|asks?|exclaims?|whispers?|yells?|shouts?|murmurs?|mutters?|sings?|thinks?)\b[^"]*"/
+
+  # ---- settings ----
+
+  def self.settings
+    raw = (YAML.safe_load(File.read(SETTINGS_FILE)) rescue nil)
+    raw = {} unless raw.is_a?(Hash)
+    { 'webhook_url' => '' }.merge(KINDS.keys.to_h { |k| [k, true] }).merge(raw)
+  end
+
+  def self.save(cfg)
+    File.write(SETTINGS_FILE, YAML.dump(cfg))
+    File.chmod(0o600, SETTINGS_FILE)   # it holds the webhook URL
+  end
+
+  # ---- Discord ----
+
+  # => [true, "HTTP 204"] or [false, "reason"]
+  def self.post(url, text)
+    uri = URI(url)
+    return [false, 'not an https:// URL'] unless uri.is_a?(URI::HTTPS)
+    res = Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 5, read_timeout: 5) do |http|
+      http.post(uri.request_uri, { content: text[0, 1990] }.to_json, 'Content-Type' => 'application/json')
+    end
+    [res.is_a?(Net::HTTPSuccess), "HTTP #{res.code}"]
+  rescue StandardError => e
+    [false, "#{e.class}: #{e.message}"]
+  end
+
+  def self.notify(text)
+    url = settings['webhook_url'].to_s.strip
+    return echo("no webhook set, not sent: #{text}") if url.empty?
+    msg = "[#{Char.name}] #{text}"
+    3.times do |i|
+      ok, info = post(url, msg)
+      return echo("sent: #{msg}") if ok
+      echo "webhook failed (#{info})#{i < 2 ? ', retrying' : ''}"
+      sleep 5 if i < 2
+    end
+  end
+
+  def self.test
+    ok, info = post(settings['webhook_url'].to_s.strip, "[#{Char.name}] announce_monitor test message")
+    echo ok ? "test message sent (#{info})" : "test message failed: #{info}"
+  end
+
+  # ---- reading the game ----
+
+  def self.text_of(xml)
+    xml.gsub(/<[^>]*>/, '').gsub('&gt;', '>').gsub('&lt;', '<').gsub('&quot;', '"').gsub('&apos;', "'").gsub('&amp;', '&')
+  end
+
+  # The KINDS keys a game line is an announcement for ([] for most lines).
+  # pcs: names of the people in the room; room: the room's title.
+  def self.kinds_for(line, pcs: [], room: '')
+    return [] if line.empty? || line.start_with?('[', '>', '---', 'You also see') || line.match?(CONTENTS)
+    kinds = KINDS.select { |_, kind| line.match?(kind[:pattern]) }.keys
+    return [] if kinds.empty?
+    return [] if line =~ SPEECH && ($1 == 'You' || pcs.include?($1))
+    kinds.delete('raffles') if RAFFLE_ROOM.any? { |pat| line.match?(pat) }
+    kinds.delete('limited_treasures') if room.match?(/limited treasures/i)
+    kinds
+  end
+
+  # Called by the downstream hook on every server string.
+  def self.watch(xml)
+    return if xml.match?(CHAT_STREAM) || xml.match?(ROOM_XML)
+    text_of(xml).each_line do |line|
+      kinds = kinds_for(line.strip, pcs: (DRRoom.pcs rescue []).to_a, room: XMLData.room_title.to_s)
+      @queue << [kinds, line.strip] unless kinds.empty?
+    end
+  end
+
+  # ---- main loop ----
+
+  def self.run
+    echo 'no webhook set yet -- run ;announce_monitor setup' if settings['webhook_url'].to_s.strip.empty?
+    @queue = Queue.new
+    DownstreamHook.add(HOOK, proc { |xml|
+      begin
+        watch(xml)
+      rescue StandardError => e
+        respond "[announce_monitor] #{e.class}: #{e.message}"
+      end
+      xml
+    }, persist: false)
+    echo "watching for #{KINDS.values.map { |k| k[:label] }.join(' and ')} announcements"
+
+    sent = {}   # line => when it was sent
+    loop do
+      batch = [@queue.pop]
+      while (more = @queue.pop(timeout: GATHER))
+        batch << more
+      end
+      now = Time.now
+      sent.delete_if { |_, time| now - time > REPEAT }
+      cfg   = settings
+      batch = batch.uniq { |_, line| line }.reject { |_, line| sent.key?(line) }
+      batch = batch.map { |kinds, line| [kinds.select { |k| cfg[k] != false }, line] }.reject { |kinds, _| kinds.empty? }
+      next if batch.empty?
+
+      batch.each { |_, line| sent[line] = now }
+      labels = batch.flat_map(&:first).uniq.map { |k| KINDS[k][:label] }
+      notify("#{labels.join(' / ')}: #{batch.map(&:last).join("\n")}")
+    end
+  end
+
+  # ---- setup window ----
+
+  def self.setup
+    unless defined?(Gtk) && Gtk::Version::MAJOR == 3
+      echo 'GTK3 is not available. Cannot open the setup window.'
+      return
+    end
+    cfg   = settings
+    done  = false
+    saved = false
+
+    Gtk.queue do
+      win = Gtk::Window.new(:toplevel)
+      win.set_title('announce_monitor setup')
+      win.set_border_width(12)
+      win.keep_above = true
+      vbox = Gtk::Box.new(:vertical, 8)
+      win.add(vbox)
+
+      lbl = Gtk::Label.new('Discord webhook URL (shared by all your characters):')
+      lbl.set_xalign(0.0)
+      vbox.pack_start(lbl, expand: false, fill: false, padding: 0)
+      url = Gtk::Entry.new
+      url.set_text(cfg['webhook_url'].to_s)
+      url.set_width_chars(64)
+      vbox.pack_start(url, expand: false, fill: true, padding: 0)
+      hint = Gtk::Label.new('Discord: channel settings > Integrations > Webhooks > New Webhook > Copy URL')
+      hint.set_xalign(0.0)
+      vbox.pack_start(hint, expand: false, fill: false, padding: 0)
+
+      boxes = KINDS.map do |key, kind|
+        cb = Gtk::CheckButton.new("#{kind[:label]} announcements")
+        cb.active = cfg[key] != false
+        vbox.pack_start(cb, expand: false, fill: false, padding: 0)
+        [key, cb]
+      end
+
+      status = Gtk::Label.new('')
+      status.set_xalign(0.0)
+      test = Gtk::Button.new(label: 'Send test message')
+      test.signal_connect('clicked') do
+        link = url.text.strip
+        status.text = 'sending...'
+        Thread.new do
+          ok, info = post(link, "[#{Char.name}] announce_monitor test message")
+          GLib::Idle.add { status.text = ok ? "Sent (#{info})" : "Failed: #{info}"; false }
+        end
+      end
+      row = Gtk::Box.new(:horizontal, 8)
+      row.pack_start(test, expand: false, fill: false, padding: 0)
+      row.pack_start(status, expand: true, fill: true, padding: 0)
+      vbox.pack_start(row, expand: false, fill: false, padding: 4)
+
+      btns = Gtk::Box.new(:horizontal, 8)
+      vbox.pack_start(btns, expand: false, fill: false, padding: 4)
+      save = Gtk::Button.new(label: 'Save')
+      save.signal_connect('clicked') do
+        AnnounceMonitor.save({ 'webhook_url' => url.text.strip }.merge(boxes.to_h { |k, cb| [k, cb.active?] }))
+        saved = true
+        win.destroy
+      end
+      cancel = Gtk::Button.new(label: 'Cancel')
+      cancel.signal_connect('clicked') { win.destroy }
+      btns.pack_end(save, expand: false, fill: false, padding: 0)
+      btns.pack_end(cancel, expand: false, fill: false, padding: 0)
+
+      win.signal_connect('destroy') { Gtk.queue { done = true } }
+      win.show_all
+    end
+
+    wait_while { !done }
+    echo saved ? "settings saved to #{SETTINGS_FILE}" : 'setup cancelled.'
+  end
+end
+
+# --- dispatch ---
+case variable[1].to_s.downcase
+when 'setup'
+  AnnounceMonitor.setup
+when 'test'
+  AnnounceMonitor.test
+when ''
+  no_kill_all
+  no_pause_all
+  AnnounceMonitor.run
+else
+  echo 'usage: ;announce_monitor  (run the monitor)   |   ;announce_monitor setup   |   ;announce_monitor test'
+end
