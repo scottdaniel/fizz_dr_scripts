@@ -5,13 +5,15 @@
   to the healer's room, whispers to the healer, waits for the heal, and goes
   back to smashing shells. If the healer isn't there (or can't fix you), it
   heals you with your own herbs (;heal-remedy) right there, waits for them to
-  work, and then walks back to the shells. If heal-remedy asks for an herb you
-  don't have, it restocks with ;herb-stock and uses herbs again if needed.
+  work, and then walks back to the shells. When any herb ;herb-stock can buy
+  is down to RESTOCK_BELOW parts, it restocks and comes back.
 
   "Significantly wounded" means any of:
     - bleeding
     - vitality below HEAL_BELOW_VITALITY
     - a fresh (non-scar) wound at WOUND_SEVERITY or worse, from HEALTH
+    - a hand that's bleeding, even bandaged (the shell box says to clean
+      your hands until it's healed)
     - the shell box says you're too injured to play
 
   Scars don't count: the healer can't take them, so they'd cause endless trips.
@@ -33,22 +35,32 @@ WOUND_SEVERITY = 3
 HEAL_TIMEOUT = 60
 MAX_HEAL_ATTEMPTS = 3
 
-# Herbs heal over time, so wait for them instead of eating more
-HERB_WAIT = 600
+# Herbs heal over time (a hand wound took about 15 minutes), so wait for them
+# instead of eating more
+HERB_WAIT = 1200
 HERB_CHECK_INTERVAL = 30
+RESTOCK_BELOW = 3
+
+# Times in a row the shell box can turn you away before the script gives up
+MAX_TURNED_AWAY = 2
+
+HANDS = ['right hand', 'left hand'].freeze
 
 Flags.add('shell-fragments', 'shell explodes')
 Flags.add('healed', 'The pain of your wounds abruptly ceases', 'but nothing else seems to happen',
           'gradually ebbs away')
-# What heal-remedy gets back when an herb it wants isn't on you. Game lines
-# can start with XML tags.
-LINE_START = '^(?:<[^>]+>)*'
-Flags.add('missing-herb', /#{LINE_START}(?:Eat|Drink|Rub|Inhale) what\?/, /#{LINE_START}What were you referring to\?/,
-          /#{LINE_START}I could not find what you were referring to/)
 
 settings = get_settings
 trash_items = settings.hollow_eve_junk.map { |x| /\b#{x}\b/i }
 hollow_eve_loot_container = settings.hollow_eve_loot_container
+
+# The herbs herb-stock buys for your hometown. It skips ones tied to another
+# town (eghmok potion is Riverhaven-only), so those can't trigger a restock.
+hometown = DRC.get_town_name(settings.hometown)
+BUYABLE_HERBS = get_data('healingherbs').herb_stocks[hometown].to_a
+                                        .reject { |herb| herb['location'] && herb['location'] != hometown }
+                                        .map { |herb| herb['name'] }
+                                        .freeze
 
 def healer_here?
   DRRoom.pcs.any? { |pc| pc.casecmp?(HEALER) }
@@ -60,6 +72,10 @@ def wounded_from_health?
   return true unless health.captured?
   return true if health.bleeding?
 
+  # The shell box says to clean your hands while a hand is bleeding, even
+  # bandaged. Minor abrasions on a hand don't bother it.
+  return true if health.bleeders.values.flatten.any? { |bleeder| HANDS.include?(bleeder.body_part) }
+
   health.wounds.any? { |severity, wounds| severity >= WOUND_SEVERITY && wounds.any? { |wound| !wound.scar? } }
 end
 
@@ -67,16 +83,15 @@ def significantly_wounded?
   checkbleeding || DRStats.health < HEAL_BELOW_VITALITY || wounded_from_health?
 end
 
-# Runs heal-remedy; false if it asked for an herb you don't have
-def used_all_herbs?
-  Flags.reset('missing-herb')
-  DRC.wait_for_script_to_complete('heal-remedy')
-  !Flags['missing-herb']
+def herbs_low?
+  BUYABLE_HERBS.any? { |herb| DRCI.count_item_parts(herb) < RESTOCK_BELOW }
 end
 
 def restock_herbs
-  DRC.message("*** Out of some herbs. Restocking with herb-stock ***")
+  DRC.message("*** Running low on herbs. Restocking with herb-stock ***")
   DRC.wait_for_script_to_complete('herb-stock')
+  # herb-stock ends at the bank, where you can't take herbs out of containers
+  DRCT.walk_to(HEAL_ROOM)
 end
 
 # false if you're still wounded after HERB_WAIT
@@ -94,17 +109,14 @@ end
 # Heals with the herbs you carry. Herbs don't stop bleeding, so tend first.
 def heal_with_herbs
   DRC.wait_for_script_to_complete('tendme') if checkbleeding
-  had_all_herbs = used_all_herbs?
-  restock_herbs unless had_all_herbs
-  return if herbs_worked?
-
-  # The herbs that were missing the first time are on hand now
-  unless had_all_herbs
-    used_all_herbs?
+  # A second round covers herbs that ran out during the first
+  2.times do
+    DRC.wait_for_script_to_complete('heal-remedy')
+    restock_herbs if herbs_low?
     return if herbs_worked?
   end
 
-  DRC.message("*** Still wounded after using herbs. Stopping. ***")
+  DRC.message("*** Still wounded after two rounds of herbs. Stopping. ***")
   DRC.beep
   exit
 end
@@ -140,12 +152,13 @@ end
 before_dying do
   Flags.delete('shell-fragments')
   Flags.delete('healed')
-  Flags.delete('missing-herb')
 end
 
 DRC.message("*** Heading to grab a shell ***")
 
 get_healed if significantly_wounded?
+
+turned_away = 0
 
 loop do
   get_healed if checkbleeding || DRStats.health < HEAL_BELOW_VITALITY
@@ -155,6 +168,12 @@ loop do
     DRC.fix_standing
     case DRC.bput('grab box', 'roundtime', 'You are too injured', 'Perhaps that would work better', 'when you have enough coins', 'You should clean your hands')
     when 'You are too injured', 'You should clean your hands'
+      turned_away += 1
+      if turned_away > MAX_TURNED_AWAY
+        DRC.message("*** The shell box keeps turning you away even after healing. Stopping. ***")
+        DRC.beep
+        exit
+      end
       get_healed
       DRCT.walk_to(16_236)
     when 'when you have enough coins'
@@ -169,6 +188,7 @@ loop do
     pause 1
     waitrt?
   end
+  turned_away = 0
 
   DRCT.walk_to(16_237)
 
