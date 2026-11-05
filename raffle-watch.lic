@@ -1,0 +1,87 @@
+=begin
+  raffle-watch.lic
+
+  Watches the festival raffle drawings and sends the result to the Familiar
+  window: a win the moment your name goes up on the result board (with a
+  beep), and a loss when the drawing ends without you.
+
+  It assumes you're holding a ticket when you start it. After each drawing it
+  waits for you to tear off a new ticket before it reports on the next one, so
+  it stays quiet for raffles you skip. Keeps running until you ;kill it, or
+  give it "once" to stop after the next drawing.
+
+  Usage:
+    ;raffle-watch
+    ;raffle-watch once
+=end
+
+no_pause_all
+no_kill_all
+
+once = Script.current.vars[1].to_s.casecmp?('once')
+name = checkname
+
+DRAWING_STARTED = /Raffle picks are closed for this drawing!/
+PRIZE_CALLED = /The winning ticket number for the \*?(\w+)\*? prize is/
+NAME_ON_BOARD = /^(\w+)'s name appears on the result board!/
+DRAWING_OVER = /Congratulations to all our winners!/
+NOT_A_WINNER = /examines your ticket but shakes (?:her|his) head/
+GOT_TICKET = /^You (?:tear off|get) .*raffle ticket/
+DROPPED_TICKET = /^You (?:drop|put) .*raffle ticket/
+ATTENDANT = /Attendant \w+/
+
+def to_familiar(text)
+  safe = text.gsub('&', '&amp;').gsub('<', '&lt;').gsub('>', '&gt;')
+  _respond("<pushStream id=\"familiar\" ifClosedStyle=\"watching\"/>[raffle] #{safe}\n<popStream/>\n")
+end
+
+entered = true
+prize = nil
+won = []
+winners = []
+
+to_familiar("Watching the raffle for #{name}.")
+echo "raffle-watch started for #{name}. Results go to the Familiar window."
+
+loop do
+  line = get
+  next if line.nil? || line.empty?
+
+  case line
+  when DRAWING_STARTED
+    prize = nil
+    won = []
+    winners = []
+    to_familiar(line) if entered
+  when PRIZE_CALLED
+    prize = Regexp.last_match(1)
+  when NAME_ON_BOARD
+    winner = Regexp.last_match(1)
+    winners << "#{prize || '?'}: #{winner}"
+    if winner.casecmp?(name)
+      won << (prize || 'a')
+      to_familiar("*** YOU WON the #{prize || 'a'} prize! ***")
+      to_familiar(line)
+      DRC.beep
+    end
+  when DRAWING_OVER
+    if entered
+      if won.empty?
+        to_familiar("You didn't win this one. Winners: #{winners.join(', ')}")
+      else
+        to_familiar("Drawing over. You won: #{won.join(', ')} prize. Put your ticket on the counter if you haven't been handed it.")
+      end
+    end
+    entered = false
+    exit if once
+  when NOT_A_WINNER
+    to_familiar(line)
+  when GOT_TICKET
+    entered = true
+  when DROPPED_TICKET
+    entered = false
+  end
+
+  # The attendant handing over your prize, or anything else she says about you
+  to_familiar(line) if line =~ ATTENDANT && line =~ /\b#{name}'s\b|your ticket|hands you/i && line !~ NOT_A_WINNER
+end
