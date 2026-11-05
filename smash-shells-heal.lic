@@ -3,7 +3,8 @@
 
   Fork of smash-shells.lic. Instead of walking off when you get hurt, it goes
   to the healer's room, whispers to the healer, waits for the heal, and goes
-  back to smashing shells.
+  back to smashing shells. If the healer isn't there (or can't fix you), it
+  runs ;safe-room instead and then walks back to the shells.
 
   "Significantly wounded" means any of:
     - bleeding
@@ -29,7 +30,6 @@ WOUND_SEVERITY = 3
 
 HEAL_TIMEOUT = 60
 MAX_HEAL_ATTEMPTS = 3
-HEALER_WAIT_LIMIT = 600
 
 Flags.add('shell-fragments', 'shell explodes')
 Flags.add('healed', 'The pain of your wounds abruptly ceases', 'but nothing else seems to happen',
@@ -56,21 +56,15 @@ def significantly_wounded?
   checkbleeding || DRStats.health < HEAL_BELOW_VITALITY || wounded_from_health?
 end
 
-def wait_for_healer
-  waited = 0
-  until healer_here?
-    if waited >= HEALER_WAIT_LIMIT
-      DRC.message("*** #{HEALER} hasn't shown up in #{HEALER_WAIT_LIMIT / 60} minutes. Stopping. ***")
-      DRC.beep
-      exit
-    end
-    if (waited % 60).zero?
-      DRC.message("*** Waiting for #{HEALER} in room #{HEAL_ROOM}... ***")
-      DRC.beep
-    end
-    pause 5
-    waited += 5
-  end
+# Slow but reliable: walks to the town's NPC healer and back
+def heal_at_safe_room
+  # force so safe-room doesn't decide we're fine and send us straight back
+  DRC.wait_for_script_to_complete('safe-room', ['force'])
+  return if DRCT.walk_to(16_236)
+
+  DRC.message("*** Couldn't get back to the shells after safe-room. Stopping. ***")
+  DRC.beep
+  exit
 end
 
 def get_healed
@@ -79,11 +73,16 @@ def get_healed
   DRCT.walk_to(HEAL_ROOM)
 
   MAX_HEAL_ATTEMPTS.times do
-    wait_for_healer
+    unless healer_here?
+      DRC.message("*** #{HEALER} isn't here. Running safe-room instead ***")
+      return heal_at_safe_room
+    end
+
     Flags.reset('healed')
     case DRC.bput(HEAL_COMMAND, 'You whisper to', 'You quietly whisper to', 'Who are you trying to whisper to')
     when 'Who are you trying to whisper to'
-      next
+      DRC.message("*** Couldn't whisper to #{HEALER}. Running safe-room instead ***")
+      return heal_at_safe_room
     end
     timeout = Time.now + HEAL_TIMEOUT
     pause 1 until Flags['healed'] || Time.now > timeout
@@ -92,9 +91,8 @@ def get_healed
     return unless significantly_wounded?
   end
 
-  DRC.message("*** Still wounded after #{MAX_HEAL_ATTEMPTS} tries with #{HEALER}. Stopping. ***")
-  DRC.beep
-  exit
+  DRC.message("*** Still wounded after #{MAX_HEAL_ATTEMPTS} tries with #{HEALER}. Running safe-room instead ***")
+  heal_at_safe_room
 end
 
 before_dying do
