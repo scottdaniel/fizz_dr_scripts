@@ -2,8 +2,8 @@
   raffle-watch.lic
 
   Watches the festival raffle drawings and sends the result to the Familiar
-  window: a win the moment your name goes up on the result board (with a
-  beep), and a loss when the drawing ends without you.
+  window: each winner as their name goes up on the result board, a beep and
+  a big notice when it's you, and a loss when the drawing ends without you.
 
   It assumes you're holding a ticket when you start it. After each drawing it
   waits for you to tear off a new ticket before it reports on the next one, so
@@ -38,7 +38,6 @@ end
 entered = true
 prize = nil
 won = []
-winners = []
 
 to_familiar("Watching the raffle for #{name}.")
 echo "raffle-watch started for #{name}. Results go to the Familiar window."
@@ -51,23 +50,22 @@ loop do
   when DRAWING_STARTED
     prize = nil
     won = []
-    winners = []
     to_familiar(line) if entered
   when PRIZE_CALLED
     prize = Regexp.last_match(1)
   when NAME_ON_BOARD
     winner = Regexp.last_match(1)
-    winners << "#{prize || '?'}: #{winner}"
     if winner.casecmp?(name)
       won << (prize || 'a')
       to_familiar("*** YOU WON the #{prize || 'a'} prize! ***")
-      to_familiar(line)
       DRC.beep
+    elsif entered
+      to_familiar("#{prize || '?'} prize: #{winner}")
     end
   when DRAWING_OVER
     if entered
       if won.empty?
-        to_familiar("You didn't win this one. Winners: #{winners.join(', ')}")
+        to_familiar("Drawing over. You didn't win this one.")
       else
         to_familiar("Drawing over. You won: #{won.join(', ')} prize. Put your ticket on the counter if you haven't been handed it.")
       end

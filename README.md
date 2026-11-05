@@ -20,5 +20,5 @@ Both keep their data in Lich's `data/DR/<character>/` folder: `stash.yaml` is wh
 |---|---|
 | `sell-gems.lic` | Walks to the nearest gem shop, sells every loose gem from your rucksack and scavenger's belt (or containers you name), and walks back. |
 | `smash-shells-heal.lic` | Fork of `smash-shells` that goes to a healer and waits for a heal when you're hurt, then goes back to smashing shells. |
-| `raffle-watch.lic` | Watches the festival raffle drawings and sends your result to the Familiar window: a win (with a beep) when your name goes up on the result board, or a loss when the drawing ends without you. Runs until killed; `;raffle-watch once` stops after one drawing. |
+| `raffle-watch.lic` | Watches the festival raffle drawings and sends each winner to the Familiar window as their name goes up on the result board, with a beep when it's you, and a loss notice when the drawing ends without you. Runs until killed; `;raffle-watch once` stops after one drawing. |
 | `2hourquit.lic` | Exits the game two hours after it starts, or after the minutes you give it (`;2hourquit 90`). |
