@@ -2,7 +2,8 @@
   announce_monitor.lic
   Watches for the Hollow Eve festival's game-wide announcements and posts them
   to a Discord webhook, so they reach your phone:
-    1) raffles, e.g. "We are ready to start a set of wonderfully free raffles! ..."
+    1) raffles, e.g. "We are ready to start a set of wonderfully free raffles! ...",
+       with a reminder to ;go2 raffle (or 16330) to join in
     2) Limited Treasures: any announcement that names the shop (a restock, say)
   Every message starts with the character's name, so one webhook can serve all
   of your characters.
@@ -41,8 +42,8 @@ module AnnounceMonitor
   REPEAT        = 600   # seconds before the same line is sent again
   HOOK          = 'announce_monitor'
 
-  KINDS = {   # settings key => what the message is tagged, what the line mentions
-    'raffles'           => { label: 'Raffle', pattern: /\braffles?\b/i },
+  KINDS = {   # settings key => what the message is tagged, what the line mentions, a line added to the message
+    'raffles'           => { label: 'Raffle', pattern: /\braffles?\b/i, reminder: ';go2 raffle (or 16330) to join in' },
     'limited_treasures' => { label: 'Limited Treasures', pattern: /\blimited\s+treasures?\b/i }
   }.freeze
 
@@ -171,8 +172,9 @@ module AnnounceMonitor
       next if batch.empty?
 
       batch.each { |_, line| sent[line] = now }
-      labels = batch.flat_map(&:first).uniq.map { |k| KINDS[k][:label] }
-      notify("#{labels.join(' / ')}: #{batch.map(&:last).join("\n")}")
+      kinds  = batch.flat_map(&:first).uniq
+      labels = kinds.map { |k| KINDS[k][:label] }
+      notify(["#{labels.join(' / ')}: #{batch.map(&:last).join("\n")}", *kinds.filter_map { |k| KINDS[k][:reminder] }].join("\n"))
     end
   end
 
