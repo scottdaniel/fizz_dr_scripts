@@ -5,6 +5,9 @@
     1) raffles, e.g. "We are ready to start a set of wonderfully free raffles! ...",
        with a reminder to ;go2 raffle (or 16330) to join in
     2) Limited Treasures: any announcement that names the shop (a restock, say)
+    3) creature capture, e.g. "Marine creatures are loose on Andreshlew Island! ...",
+       with a reminder to ;capture-critter hollow_eve to join in, and
+       "All of the creatures have been captured!" when it's over
   Every message starts with the character's name, so one webhook can serve all
   of your characters.
 
@@ -25,7 +28,7 @@
   channels, someone in the room (or you) talking, raffle tickets, the raffle
   attendant and result board, tables like your ticket or the RAFFLE listing,
   or anything at all while you're inside the Limited Treasures shop.
-  Lines that arrive within 2 seconds of each other go out as one message, and
+  Lines that arrive within 10 seconds of each other go out as one message, and
   a line already sent in the last 10 minutes isn't sent again.
   Everything it sends is echoed in game, so a line that shouldn't have gone
   out is easy to spot.
@@ -38,13 +41,17 @@ require 'yaml'
 
 module AnnounceMonitor
   SETTINGS_FILE = File.join(DATA_DIR, 'announce_monitor.yaml')
-  GATHER        = 2     # seconds to wait for more lines of the same announcement
+  GATHER        = 10    # seconds to wait for more lines of the same announcement (the TWEET can trail by 7)
   REPEAT        = 600   # seconds before the same line is sent again
   HOOK          = 'announce_monitor'
 
-  KINDS = {   # settings key => what the message is tagged, what the line mentions, a line added to the message
+  # settings key => label: what the message is tagged, pattern: what the line mentions,
+  # reminder: a line added to the message, over: lines saying it's finished (they get no reminder)
+  KINDS = {
     'raffles'           => { label: 'Raffle', pattern: /\braffles?\b/i, reminder: ';go2 raffle (or 16330) to join in' },
-    'limited_treasures' => { label: 'Limited Treasures', pattern: /\blimited\s+treasures?\b/i }
+    'limited_treasures' => { label: 'Limited Treasures', pattern: /\blimited\s+treasures?\b/i },
+    'creature_capture'  => { label: 'Creature Capture', pattern: /creatures (?:are loose|have been captured)/i,
+                             over: /have been captured/i, reminder: ';capture-critter hollow_eve to join in' }
   }.freeze
 
   # Lines that mention a raffle but are just the raffle room going about its business
@@ -172,9 +179,13 @@ module AnnounceMonitor
       next if batch.empty?
 
       batch.each { |_, line| sent[line] = now }
-      kinds  = batch.flat_map(&:first).uniq
-      labels = kinds.map { |k| KINDS[k][:label] }
-      notify(["#{labels.join(' / ')}: #{batch.map(&:last).join("\n")}", *kinds.filter_map { |k| KINDS[k][:reminder] }].join("\n"))
+      kinds     = batch.flat_map(&:first).uniq
+      labels    = kinds.map { |k| KINDS[k][:label] }
+      reminders = kinds.filter_map do |k|
+        lines = batch.select { |ks, _| ks.include?(k) }.map(&:last)
+        KINDS[k][:reminder] unless KINDS[k][:over] && lines.all? { |l| l.match?(KINDS[k][:over]) }
+      end
+      notify(["#{labels.join(' / ')}: #{batch.map(&:last).join("\n")}", *reminders].join("\n"))
     end
   end
 
