@@ -17,11 +17,13 @@
   The webhook URL is shared by all characters and saved in
   <lich data dir>/announce_monitor.yaml (not in the scripts repo).
 
-  How it works: a downstream hook looks at every line the game sends. A line
-  that mentions raffles or Limited Treasures is sent on, unless it's only
-  something happening around you: room descriptions, chat channels, someone in
-  the room (or you) talking, raffle tickets, the raffle attendant and result
-  board, or anything at all while you're inside the Limited Treasures shop.
+  How it works: a downstream hook looks at every line the game sends,
+  including the TWEETs the game sends on its "ooc" stream (Saga's
+  [Announcements]). A line that mentions raffles or Limited Treasures is sent
+  on, unless it's only something happening around you: room descriptions, chat
+  channels, someone in the room (or you) talking, raffle tickets, the raffle
+  attendant and result board, tables like your ticket or the RAFFLE listing,
+  or anything at all while you're inside the Limited Treasures shop.
   Lines that arrive within 2 seconds of each other go out as one message, and
   a line already sent in the last 10 minutes isn't sent again.
   Everything it sends is echoed in game, so a line that shouldn't have gone
@@ -49,14 +51,20 @@ module AnnounceMonitor
     /raffle tickets?/i,                   # people getting and binning tickets, the RAFFLE TICKET banner
     /\bAttendant\b/,                      # the attendant running a drawing
     /result board/i,                      # winners going up on the board
-    /\A\*?\s*Raffle (?:Number|winners|\d)/   # reading your ticket or the board ("Raffle Number: 18.", "* Raffle 14 *")
+    /\A\*?\s*Raffle (?:Number|winners|\d)/,  # reading your ticket or the board ("Raffle Number: 18.", "* Raffle 14 *")
+    /\AThere are no raffles scheduled/       # the RAFFLE command when nothing's on
   ].freeze
 
   # "On a black oak rack you see ...": looking at what's on or in something
   CONTENTS    = /\A(?:On|In|Inside|Under|Behind|Atop) .*? you see /
 
-  CHAT_STREAM = /<pushStream id=["'](?:thoughts|chatter|lnet|speech|talk|whispers|conversation|ooc|familiar)["']/
+  # Not "ooc": DR sends its game-wide TWEETs there (Saga shows it as [Announcements]):
+  #   <pushStream id="ooc"/><b>TWEET:  </b>Raffles, raffles, raffles!  More raffles starting in just a few! ...
+  CHAT_STREAM = /<pushStream id=["'](?:thoughts|chatter|lnet|speech|talk|whispers|conversation|familiar)["']/
   ROOM_XML    = /roomDesc|roomName|<component id=["']room/
+  # Tables (your ticket, the result board, the RAFFLE listing) come between
+  # <output class="mono"/> and <output class=""/>; they're replies, never announcements.
+  OUTPUT      = /<output class=["']([^"']*)["']/
   # "Remu says, ...", "Vekara says in a Siksrajan accent, ...", "You ask, ..."
   SPEECH      = /\A(\w+)\b[^"]*?\b(?:says?|asks?|exclaims?|whispers?|yells?|shouts?|murmurs?|mutters?|sings?|thinks?)\b[^"]*"/
 
@@ -124,10 +132,13 @@ module AnnounceMonitor
 
   # Called by the downstream hook on every server string.
   def self.watch(xml)
-    return if xml.match?(CHAT_STREAM) || xml.match?(ROOM_XML)
-    text_of(xml).each_line do |line|
-      kinds = kinds_for(line.strip, pcs: (DRRoom.pcs rescue []).to_a, room: XMLData.room_title.to_s)
-      @queue << [kinds, line.strip] unless kinds.empty?
+    skip = xml.match?(CHAT_STREAM) || xml.match?(ROOM_XML)
+    xml.each_line do |raw|
+      raw.scan(OUTPUT) { |(style)| @mono = (style == 'mono') }
+      next if skip || @mono
+      line  = text_of(raw).strip
+      kinds = kinds_for(line, pcs: (DRRoom.pcs rescue []).to_a, room: XMLData.room_title.to_s)
+      @queue << [kinds, line] unless kinds.empty?
     end
   end
 
