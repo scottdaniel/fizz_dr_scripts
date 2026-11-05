@@ -1,14 +1,17 @@
 =begin
   raffle-watch.lic
 
-  Watches the festival raffle drawings and sends the result to the Familiar
-  window: each winner as their name goes up on the result board, a beep and
-  a big notice when it's you, and a loss when the drawing ends without you.
+  Plays the festival raffle for you and reports to the Familiar window:
+    - each winner as their name goes up on the result board
+    - if it's you: a beep, a big notice, and PUT TICKET ON COUNTER to claim
+    - if the drawing ends without you: PUT TICKET IN BUCKET
+    - when picks open for the next raffle: GET TICKET FROM COUNTER
 
-  It assumes you're holding a ticket when you start it. After each drawing it
-  waits for you to tear off a new ticket before it reports on the next one, so
-  it stays quiet for raffles you skip. Keeps running until you ;kill it, or
-  give it "once" to stop after the next drawing.
+  Stand in the raffle room with a free hand. It assumes you're holding a
+  ticket when you start it. If your ticket isn't in your hands when it's time
+  to put it somewhere, it gets it out of your containers first. Keeps running
+  until you ;kill it, or give it "once" to stop after the next drawing
+  (it still bins or claims that ticket, but doesn't get a new one).
 
   Usage:
     ;raffle-watch
@@ -21,6 +24,7 @@ no_kill_all
 once = Script.current.vars[1].to_s.casecmp?('once')
 name = checkname
 
+PICKS_OPEN = /Raffle picks are now available for the next drawing!/
 DRAWING_STARTED = /Raffle picks are closed for this drawing!/
 PRIZE_CALLED = /The winning ticket number for the \*?(\w+)\*? prize is/
 NAME_ON_BOARD = /^(\w+)'s name appears on the result board!/
@@ -29,15 +33,66 @@ NOT_A_WINNER = /examines your ticket but shakes (?:her|his) head/
 GOT_TICKET = /^You (?:tear off|get) .*raffle ticket/
 DROPPED_TICKET = /^You (?:drop|put) .*raffle ticket/
 ATTENDANT = /Attendant \w+/
+# "What were you referring to?" / "I don't understand what you're referring to."
+NOT_FOUND = /referring to/
+NOT_FOUND_LINE = /.*referring to.*/
 
 def to_familiar(text)
   safe = text.gsub('&', '&amp;').gsub('<', '&lt;').gsub('>', '&gt;')
   _respond("<pushStream id=\"familiar\" ifClosedStyle=\"watching\"/>[raffle] #{safe}\n<popStream/>\n")
 end
 
+# Puts your ticket somewhere. If it isn't in your hands, gets it out of your
+# containers and tries once more. Returns the game's response ('' if none).
+def put_ticket(command, *matches)
+  result = DRC.bput(command, *matches, NOT_FOUND_LINE)
+  return result unless result =~ NOT_FOUND
+  return result unless DRCI.get_item?('raffle ticket')
+
+  DRC.bput(command, *matches, NOT_FOUND_LINE)
+end
+
+# Returns true once the attendant has taken your winning ticket
+def claim_prize
+  result = put_ticket('put ticket on counter', /.*your ticket.*/, /.*hands you.*/)
+  if result.empty? || result =~ NOT_FOUND
+    to_familiar("Couldn't put your winning ticket on the counter! PUT TICKET ON COUNTER yourself.")
+    DRC.beep
+    return false
+  end
+
+  to_familiar(result)
+  true
+end
+
+def trash_ticket
+  result = put_ticket('put ticket in bucket', /^You drop .*raffle ticket.*/)
+  return if result =~ /^You drop/
+
+  to_familiar("Couldn't put your ticket in the bucket: #{result.empty? ? 'no response' : result}")
+end
+
+# Returns true if you tore off a ticket
+def get_ticket
+  if DRC.left_hand && DRC.right_hand
+    to_familiar('Your hands are full, so no ticket for this drawing. Free a hand and GET TICKET FROM COUNTER.')
+    return false
+  end
+
+  result = DRC.bput('get ticket from counter', /^You tear off .*raffle ticket.*/, /^You need a free hand.*/, NOT_FOUND_LINE)
+  if result =~ /^You tear off/
+    to_familiar(result)
+    return true
+  end
+
+  to_familiar("Couldn't get a ticket: #{result.empty? ? 'no response' : result}")
+  false
+end
+
 entered = true
 prize = nil
 won = []
+claimed = false
 
 to_familiar("Watching the raffle for #{name}.")
 echo "raffle-watch started for #{name}. Results go to the Familiar window."
@@ -47,9 +102,12 @@ loop do
   next if line.nil? || line.empty?
 
   case line
+  when PICKS_OPEN
+    entered = get_ticket
   when DRAWING_STARTED
     prize = nil
     won = []
+    claimed = false
     to_familiar(line) if entered
   when PRIZE_CALLED
     prize = Regexp.last_match(1)
@@ -59,16 +117,18 @@ loop do
       won << (prize || 'a')
       to_familiar("*** YOU WON the #{prize || 'a'} prize! ***")
       DRC.beep
+      claimed = claim_prize
     elsif entered
       to_familiar("#{prize || '?'} prize: #{winner}")
     end
   when DRAWING_OVER
-    if entered
-      if won.empty?
-        to_familiar("Drawing over. You didn't win this one.")
-      else
-        to_familiar("Drawing over. You won: #{won.join(', ')} prize. Put your ticket on the counter if you haven't been handed it.")
-      end
+    if !won.empty?
+      to_familiar("Drawing over. You won the #{won.join(', ')} prize!")
+      # The attendant asks winners to claim now, so give it one more go
+      claim_prize unless claimed
+    elsif entered
+      to_familiar("Drawing over. You didn't win this one.")
+      trash_ticket
     end
     entered = false
     exit if once
