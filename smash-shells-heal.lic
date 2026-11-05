@@ -4,7 +4,9 @@
   Fork of smash-shells.lic. Instead of walking off when you get hurt, it goes
   to the healer's room, whispers to the healer, waits for the heal, and goes
   back to smashing shells. If the healer isn't there (or can't fix you), it
-  runs ;safe-room instead and then walks back to the shells.
+  heals you with your own herbs (;heal-remedy) right there, waits for them to
+  work, and then walks back to the shells. If heal-remedy asks for an herb you
+  don't have, it restocks with ;herb-stock and uses herbs again if needed.
 
   "Significantly wounded" means any of:
     - bleeding
@@ -31,9 +33,18 @@ WOUND_SEVERITY = 3
 HEAL_TIMEOUT = 60
 MAX_HEAL_ATTEMPTS = 3
 
+# Herbs heal over time, so wait for them instead of eating more
+HERB_WAIT = 600
+HERB_CHECK_INTERVAL = 30
+
 Flags.add('shell-fragments', 'shell explodes')
 Flags.add('healed', 'The pain of your wounds abruptly ceases', 'but nothing else seems to happen',
           'gradually ebbs away')
+# What heal-remedy gets back when an herb it wants isn't on you. Game lines
+# can start with XML tags.
+LINE_START = '^(?:<[^>]+>)*'
+Flags.add('missing-herb', /#{LINE_START}(?:Eat|Drink|Rub|Inhale) what\?/, /#{LINE_START}What were you referring to\?/,
+          /#{LINE_START}I could not find what you were referring to/)
 
 settings = get_settings
 trash_items = settings.hollow_eve_junk.map { |x| /\b#{x}\b/i }
@@ -56,13 +67,44 @@ def significantly_wounded?
   checkbleeding || DRStats.health < HEAL_BELOW_VITALITY || wounded_from_health?
 end
 
-# Slow but reliable: walks to the town's NPC healer and back
-def heal_at_safe_room
-  # force so safe-room doesn't decide we're fine and send us straight back
-  DRC.wait_for_script_to_complete('safe-room', ['force'])
-  return if DRCT.walk_to(16_236)
+# Runs heal-remedy; false if it asked for an herb you don't have
+def used_all_herbs?
+  Flags.reset('missing-herb')
+  DRC.wait_for_script_to_complete('heal-remedy')
+  !Flags['missing-herb']
+end
 
-  DRC.message("*** Couldn't get back to the shells after safe-room. Stopping. ***")
+def restock_herbs
+  DRC.message("*** Out of some herbs. Restocking with herb-stock ***")
+  DRC.wait_for_script_to_complete('herb-stock')
+end
+
+# false if you're still wounded after HERB_WAIT
+def herbs_worked?
+  DRC.message("*** Waiting up to #{HERB_WAIT / 60} minutes for the herbs to work ***")
+  give_up = Time.now + HERB_WAIT
+  while significantly_wounded?
+    return false if Time.now > give_up
+
+    pause HERB_CHECK_INTERVAL
+  end
+  true
+end
+
+# Heals with the herbs you carry. Herbs don't stop bleeding, so tend first.
+def heal_with_herbs
+  DRC.wait_for_script_to_complete('tendme') if checkbleeding
+  had_all_herbs = used_all_herbs?
+  restock_herbs unless had_all_herbs
+  return if herbs_worked?
+
+  # The herbs that were missing the first time are on hand now
+  unless had_all_herbs
+    used_all_herbs?
+    return if herbs_worked?
+  end
+
+  DRC.message("*** Still wounded after using herbs. Stopping. ***")
   DRC.beep
   exit
 end
@@ -74,15 +116,15 @@ def get_healed
 
   MAX_HEAL_ATTEMPTS.times do
     unless healer_here?
-      DRC.message("*** #{HEALER} isn't here. Running safe-room instead ***")
-      return heal_at_safe_room
+      DRC.message("*** #{HEALER} isn't here. Using herbs instead ***")
+      return heal_with_herbs
     end
 
     Flags.reset('healed')
     case DRC.bput(HEAL_COMMAND, 'You whisper to', 'You quietly whisper to', 'Who are you trying to whisper to')
     when 'Who are you trying to whisper to'
-      DRC.message("*** Couldn't whisper to #{HEALER}. Running safe-room instead ***")
-      return heal_at_safe_room
+      DRC.message("*** Couldn't whisper to #{HEALER}. Using herbs instead ***")
+      return heal_with_herbs
     end
     timeout = Time.now + HEAL_TIMEOUT
     pause 1 until Flags['healed'] || Time.now > timeout
@@ -91,13 +133,14 @@ def get_healed
     return unless significantly_wounded?
   end
 
-  DRC.message("*** Still wounded after #{MAX_HEAL_ATTEMPTS} tries with #{HEALER}. Running safe-room instead ***")
-  heal_at_safe_room
+  DRC.message("*** Still wounded after #{MAX_HEAL_ATTEMPTS} tries with #{HEALER}. Using herbs instead ***")
+  heal_with_herbs
 end
 
 before_dying do
   Flags.delete('shell-fragments')
   Flags.delete('healed')
+  Flags.delete('missing-herb')
 end
 
 DRC.message("*** Heading to grab a shell ***")
