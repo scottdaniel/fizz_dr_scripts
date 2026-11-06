@@ -17,6 +17,8 @@
     ;LT                          just go in and look at the stands
     ;LT mask greatcoat bookbag   buy these, in this order
     ;LT "half mask" greatcoat    quote (or comma-separate) names with spaces
+    ;LT third                    buy whatever is on the third stand (or
+                                 first, second); mix them: ;LT kimono third
     ;LT now mask greatcoat       only if the sale is already open (you got
                                  there late): go in and buy right away.
                                  Before the curtain comes down, this walks
@@ -33,7 +35,11 @@
       before the next buy.
     - It never buys the rock. Gortik: GET the rock to check how much your
       family has bought this year; he won't refund it if you buy it.
-    - Each stand sells only 10, so name the one you want most first.
+    - Each stand sells only 10, so name the one you want most first. In
+      2026 all three stands were empty about 20 seconds after the curtain
+      came down.
+    - Each family can buy 5 from a stand. Bring plenty: the 2026 kimono was
+      3,750,000 Kronars (375 platinum).
 =end
 
 no_pause_all
@@ -64,7 +70,8 @@ module LimitedTreasures
     /^#{PROMPT}You (?:can't|cannot|must|need|will have to|'ll have to)\b.*/
   ].freeze
 
-  # "The sales clerk hands you a fanciful silversteel half mask ..."
+  # "You decide to purchase the kimono, and pay the sales clerk 3,750,000 Kronars."
+  # "The sales clerk hands you your songsilk kimono."
   # (others see "Refia hands the sales clerk some coins." / "The sales clerk hands Refia a ...")
   BOUGHT = [/sales clerk hands you\b.*/, /^#{PROMPT}You decide to purchase\b.*/].freeze
   # The clerk's answers to you that aren't a sale. "Buy what?" is the game's
@@ -83,9 +90,26 @@ module LimitedTreasures
   # "On the silversteel stand you see a ... and a ...", or a shop list:
   # "On the silversteel stand, you see:" followed by indented "  a ... for 10 platinum Kronars" lines
   STAND_CONTENTS = /^#{PROMPT}On (?:the|a|an) [^,]*?stand,? you see:?\s*(.*)$/
+  # "There is nothing on there."
   STAND_EMPTY    = /^#{PROMPT}(?:There(?: is|'s)|You see|You don't see) nothing\b/i
   STAND_MISSING  = /^#{PROMPT}(?:What were you referring to|I could not find)\b/
   LIST_ITEM      = /^\s{2,}(\S.*)$/
+  # "a X, a Y and a Z" => each item
+  LIST_SPLIT     = /,\s*(?:and\s+)?(?=(?:a|an|some)\s)|\s+and\s+(?=(?:a|an|some)\s)/i
+
+  # ;LT third (or "third stand") buys what's on that stand
+  STAND_PICK = /\A(first|second|third)(?:\s+stand)?\z/i
+  # Words that end an item's name: "kimono depicting a ...", "mask embellished with ..."
+  LINK_WORDS = %w[
+    of with in on from for at by to amid amidst among amongst around about under over
+    beneath below behind between into onto upon across along atop inside within against
+    near like that which whose bearing featuring depicting showing displaying holding
+    cradling clutching framing encircling surrounding capturing flaunting
+  ].freeze
+  # "inlaid with", "set with": past participles without -ed
+  PARTICIPLES = %w[inlaid set made wrought sewn woven hung spun strung bound dyed].freeze
+  # What follows a participle like "capturing an ..." or "flaunting a ..."
+  DETERMINERS = /\A(?:a|an|the|some|its|his|her|their|two|three|four|five|several|many|numerous|\d+)\z/i
 
   module_function
 
@@ -97,7 +121,7 @@ module LimitedTreasures
   def parse_args(raw)
     words = raw.to_s.strip
     now = words.match?(/\Anow\b/i)
-    words = words.sub(/\Anow\b,?\s*/i, '')
+    words = words.sub(/\Anow\b,?\s*/i, '').gsub(/\b(first|second|third)\s+stand\b/i, '\1')
     items = words.include?(',') ? words.split(',') : words.scan(/"([^"]*)"|(\S+)/).map { |quoted, word| quoted || word }
     [now, items.map { |item| item.delete('"').strip }.reject(&:empty?)]
   end
@@ -162,8 +186,65 @@ module LimitedTreasures
     end
   end
 
-  # What's on a stand, as a sentence
-  def look_on(stand)
+  # "third" => "third stand", or nil if it's an item name
+  def stand_for(item)
+    pick = item.to_s.strip.match(STAND_PICK)
+    pick && STANDS[pick[1].capitalize]
+  end
+
+  def link_word?(word, following)
+    word = word.downcase
+    return true if LINK_WORDS.include?(word)
+    return false if following.nil?
+
+    following = following.downcase
+    return true if word.end_with?('ing') && following.match?(DETERMINERS)
+
+    # "embellished with", "trimmed in", but not "bed with" or "steed with"
+    participle = PARTICIPLES.include?(word) || (word.length >= 5 && word.end_with?('ed') && !word.end_with?('eed'))
+    participle && LINK_WORDS.include?(following)
+  end
+
+  # Names to BUY an item by, most specific first:
+  # "a belted songsilk kimono depicting a captive unicorn" => ["songsilk kimono", "kimono"]
+  def buy_names(description)
+    words = description.to_s.strip.sub(/\.\z/, '').sub(/\A(?:a|an|some|the)\s+/i, '').split
+    return [] if words.empty?
+
+    cut = (1...words.size).find { |i| link_word?(words[i], words[i + 1]) } || words.size
+    noun = words[cut - 1].delete('.,;:!?"')
+    adjective = cut >= 2 ? words[cut - 2] : nil
+    names = []
+    names << "#{adjective} #{noun}" if adjective&.match?(/\A[a-z][a-z-]*\z/i)
+    names << noun
+    names.reject(&:empty?).uniq
+  end
+
+  def split_list(text)
+    text.split(LIST_SPLIT).map(&:strip).reject(&:empty?)
+  end
+
+  # Buy what's on a stand: [true, what the clerk said, name] or [false, why not, name]
+  def buy_from(stand)
+    return [false, "couldn't get onto the sales floor", nil] unless enter_sales_floor == :inside
+
+    items, problem = stand_items(stand)
+    return [false, problem, nil] unless items
+    return [false, "nothing on the #{stand}", nil] if items.empty?
+
+    names = buy_names(items.first)
+    said = "can't tell what to BUY for #{items.first}"
+    names.each do |name|
+      bought, said = buy(name)
+      return [true, said, name] if bought
+      # Only "Buy what?" means try the plainer name; money or a limit won't change
+      break unless said =~ /\ABuy what\?/
+    end
+    [false, "#{said} (it's #{items.first})", names.first]
+  end
+
+  # What's on a stand: [items, nil] (no items if it's empty) or [nil, why not]
+  def stand_items(stand)
     clear
     put "look on #{stand}"
     listed = nil
@@ -188,18 +269,26 @@ module LimitedTreasures
       text = strip_prompt(line)
       if (seen = text.match(STAND_CONTENTS))
         rest = seen[1].strip.sub(/\.\z/, '')
-        return rest unless rest.empty?
+        return [split_list(rest), nil] unless rest.empty?
 
         listed = []
       elsif text =~ STAND_EMPTY
-        return 'nothing'
+        return [[], nil]
       elsif text =~ STAND_MISSING
-        return "no #{stand} here"
+        return [nil, "no #{stand} here"]
       end
     end
-    return listed.join('; ') if listed && !listed.empty?
+    return [listed, nil] if listed && !listed.empty?
 
-    listed ? 'nothing listed' : "no answer to LOOK ON #{stand.upcase}"
+    [nil, listed ? 'nothing listed' : "no answer to LOOK ON #{stand.upcase}"]
+  end
+
+  # What's on a stand, as a sentence
+  def look_on(stand)
+    items, problem = stand_items(stand)
+    return problem unless items
+
+    items.empty? ? 'nothing' : items.join('; ')
   end
 
   def look_at_stands
@@ -217,7 +306,8 @@ if Script.current.vars[1].to_s =~ /\A(?:help|\?)\z/i
       ;LT                          just go in and look at the stands
       ;LT mask greatcoat bookbag   buy these, in this order
       ;LT "half mask" greatcoat    quote (or comma-separate) names with spaces
-      ;LT now mask                 sale already open? go in right away (before it opens: trap!)
+      ;LT third                    buy whatever is on the third stand (or first, second)
+      ;LT now mask                sale already open? go in right away (before it opens: trap!)
   HELP
   exit
 end
@@ -236,7 +326,8 @@ if !items.empty? && DRC.left_hand && DRC.right_hand
   DRC.message('LT: Both your hands are full. Free one, or I stow your left hand before the first buy.')
 end
 
-plan = items.empty? ? 'look at the stands' : "buy #{items.join(', ')}, then look at the stands"
+wanted = items.map { |item| (stand = LTS.stand_for(item)) ? "whatever is on the #{stand}" : item }
+plan = items.empty? ? 'look at the stands' : "buy #{wanted.join(', ')}, then look at the stands"
 echo(now ? "Going in now to #{plan}." : "Waiting for the curtain to power down, then I'll #{plan}.")
 
 paused = []
@@ -263,7 +354,13 @@ loop do
   end
 end
 
-results = items.map { |item| [item, *LTS.buy(item)] }
+results = items.map do |item|
+  stand = LTS.stand_for(item)
+  next [item, *LTS.buy(item)] unless stand
+
+  bought, said, name = LTS.buy_from(stand)
+  [name ? "#{name} (#{stand})" : "the #{stand}", bought, said]
+end
 results.each do |item, bought, said|
   DRC.message("LT: #{bought ? 'Bought' : "Didn't get"} #{item}: #{said}")
 end
