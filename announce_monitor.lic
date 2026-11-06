@@ -4,7 +4,10 @@
   to a Discord webhook, so they reach your phone:
     1) raffles, e.g. "We are ready to start a set of wonderfully free raffles! ...",
        with a reminder to ;go2 raffle (or 16330) to join in
-    2) Limited Treasures: any announcement that names the shop (a restock, say)
+    2) Limited Treasures: any announcement that names the shop (a restock, say),
+       with a reminder to ;go2 10205, the lounge where everyone waits for the sale
+       (not the Sales Floor: its curtained door throws stones until the curtain
+       powers down)
     3) creature capture, e.g. "Marine creatures are loose on Andreshlew Island! ...",
        with a reminder to ;capture-critter hollow_eve to join in, and
        "All of the creatures have been captured!" when it's over
@@ -49,7 +52,8 @@ module AnnounceMonitor
   # reminder: a line added to the message, over: lines saying it's finished (they get no reminder)
   KINDS = {
     'raffles'           => { label: 'Raffle', pattern: /\braffles?\b/i, reminder: ';go2 raffle (or 16330) to join in' },
-    'limited_treasures' => { label: 'Limited Treasures', pattern: /\blimited\s+treasures?\b/i },
+    'limited_treasures' => { label: 'Limited Treasures', pattern: /\blimited\s+treasures?\b/i,
+                             reminder: ';go2 10205 to get to the Limited Treasures lounge' },
     'creature_capture'  => { label: 'Creature Capture', pattern: /creatures (?:are loose|have been captured)/i,
                              over: /have been captured/i, reminder: ';capture-critter hollow_eve to join in' }
   }.freeze
