@@ -6,17 +6,18 @@
   gets it all back.
 
   Usage:
-    ;stash crafting        # forging and shaping gear
+    ;stash crafting        # forging, shaping and enchanting gear
     ;stash forging         # just forging gear
     ;stash shaping         # just shaping gear
+    ;stash enchanting      # just enchanting gear
     ;stash all             # crafting gear plus your extras
     ;stash add <item>      # add something to your extras (taps it first to check the name)
     ;stash remove <item>   # take something off your extras
     ;stash list            # show your gear, your extras, and what's stashed right now
 
-  Crafting gear is forging_tools and shaping_tools from your yaml, plus the
-  books, logbooks and supplies in SUPPLIES below. It comes out of your
-  crafting_container, one of each.
+  Crafting gear is forging_tools, shaping_tools and enchanting_tools from your
+  yaml, plus the books, logbooks and supplies in SUPPLIES below. It comes out
+  of your crafting_container, one of each.
 
   Extras are your own list, kept in EXTRAS. It starts as codex, textbook and
   contract. Every one of them you're carrying gets stashed, from whichever
@@ -54,8 +55,15 @@ SUPPLIES = {
   'shaping' => [
     'shap.book', # book of apprentice shaping instructions
     'engineering logbook'
+  ],
+  'enchanting' => [
+    'artificing book', # book of apprentice artificing instructions
+    'enchanting logbook',
+    'fount' # fragile rough mana fount
   ]
 }.freeze
+# ;stash crafting does all of these
+DISCIPLINES = SUPPLIES.keys.freeze
 
 # bput returns only the matched text, so these match the whole line
 GET_SUCCESS = [/^You get .*/, /^You pick up .*/].freeze
@@ -121,7 +129,11 @@ def settle
 end
 
 def gear_for(disciplines, settings)
-  tools = { 'forging' => settings.forging_tools.to_a, 'shaping' => settings.shaping_tools.to_a }
+  tools = {
+    'forging'    => settings.forging_tools.to_a,
+    'shaping'    => settings.shaping_tools.to_a,
+    'enchanting' => settings.enchanting_tools.to_a
+  }
   disciplines.flat_map { |discipline| tools[discipline] + SUPPLIES[discipline] }.uniq
 end
 
@@ -251,7 +263,7 @@ end
 
 def show_list(settings)
   extras = load_extras
-  DRC.message("stash: crafting gear (;stash crafting): #{gear_for(%w[forging shaping], settings).join(', ')}")
+  DRC.message("stash: crafting gear (;stash crafting): #{gear_for(DISCIPLINES, settings).join(', ')}")
   DRC.message("stash: extras (;stash all adds these): #{extras.empty? ? 'none' : extras.join(', ')}")
 
   stashed = load_yaml(STASHED, [])
@@ -268,12 +280,12 @@ end
 settings = get_settings
 command = Script.current.vars[1].to_s.downcase
 item = Script.current.vars[2..].to_a.compact.join(' ').downcase.strip
-crafting_gear = gear_for(%w[forging shaping], settings)
+crafting_gear = gear_for(DISCIPLINES, settings)
 
 case command
 when 'crafting'
   stash_items(crafting_gear, [], settings.crafting_container)
-when 'forging', 'shaping'
+when *DISCIPLINES
   stash_items(gear_for([command], settings), [], settings.crafting_container)
 when 'all'
   stash_items(crafting_gear, load_extras - crafting_gear, settings.crafting_container)
@@ -284,5 +296,5 @@ when 'remove'
 when 'list'
   show_list(settings)
 else
-  DRC.message('stash: use ;stash crafting, forging, shaping, all, add <item>, remove <item>, or list.')
+  DRC.message('stash: use ;stash crafting, forging, shaping, enchanting, all, add <item>, remove <item>, or list.')
 end

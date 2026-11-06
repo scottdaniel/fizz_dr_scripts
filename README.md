@@ -9,7 +9,7 @@ Fizzlestiks's house is reached with `;go2 14665` then `MOVE ARCH`. Both scripts 
 
 | Script | What it does |
 |---|---|
-| `stash.lic` | Puts things away in the house so your containers have room. `;stash crafting` (forging and shaping gear: the yaml's `forging_tools` and `shaping_tools` plus crafting books, logbooks, oil and flux), `;stash forging`, `;stash shaping`, `;stash all` (crafting gear plus your extras), `;stash add <item>` (taps it to check the name, then adds it to your extras), `;stash remove <item>`, `;stash list`. Items go under the bed, then on the wall, in the wall, on the bookcase, on the table, skipping any spot that's full. |
+| `stash.lic` | Puts things away in the house so your containers have room. `;stash crafting` (forging, shaping and enchanting gear: the yaml's `forging_tools`, `shaping_tools` and `enchanting_tools` plus crafting books, logbooks, oil, flux and the mana fount), `;stash forging`, `;stash shaping`, `;stash enchanting`, `;stash all` (crafting gear plus your extras), `;stash add <item>` (taps it to check the name, then adds it to your extras), `;stash remove <item>`, `;stash list`. Items go under the bed, then on the wall, in the wall, on the bookcase, on the table, skipping any spot that's full. |
 | `unstash.lic` | Gets back everything `stash` put away, and only that, checking each item's full name so look-alikes stored at home stay put. Each thing goes back in the container it came from. |
 
 Both keep their data in Lich's `data/DR/<character>/` folder: `stash.yaml` is what's stashed right now and where, `stash-extras.yaml` is your extras list.
