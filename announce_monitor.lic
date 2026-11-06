@@ -30,7 +30,8 @@
   on, unless it's only something happening around you: room descriptions, chat
   channels, someone in the room (or you) talking, raffle tickets, the raffle
   attendant and result board, tables like your ticket or the RAFFLE listing,
-  or anything at all while you're inside the Limited Treasures shop.
+  or anything at all while you're inside the Limited Treasures shop. A TWEET
+  always goes through, even while you're waiting in the lounge.
   Lines that arrive within 10 seconds of each other go out as one message, and
   a line already sent in the last 10 minutes isn't sent again.
   Everything it sends is echoed in game, so a line that shouldn't have gone
@@ -73,6 +74,8 @@ module AnnounceMonitor
   # Not "ooc": DR sends its game-wide TWEETs there (Saga shows it as [Announcements]):
   #   <pushStream id="ooc"/><b>TWEET:  </b>Raffles, raffles, raffles!  More raffles starting in just a few! ...
   CHAT_STREAM = /<pushStream id=["'](?:thoughts|chatter|lnet|speech|talk|whispers|conversation|familiar)["']/
+  # A game-wide TWEET counts wherever you are; the "ooc" stream also carries OOC whispers, which don't get this pass
+  TWEET       = %r{<pushStream id=["']ooc["']\s*/>\s*<b>TWEET:}
   ROOM_XML    = /roomDesc|roomName|<component id=["']room/
   # Tables (your ticket, the result board, the RAFFLE listing) come between
   # <output class="mono"/> and <output class=""/>; they're replies, never announcements.
@@ -131,11 +134,12 @@ module AnnounceMonitor
   end
 
   # The KINDS keys a game line is an announcement for ([] for most lines).
-  # pcs: names of the people in the room; room: the room's title.
-  def self.kinds_for(line, pcs: [], room: '')
+  # pcs: names of the people in the room; room: the room's title;
+  # tweet: it's a game-wide TWEET, so none of the "only around you" checks apply.
+  def self.kinds_for(line, pcs: [], room: '', tweet: false)
     return [] if line.empty? || line.start_with?('[', '>', '---', 'You also see') || line.match?(CONTENTS)
     kinds = KINDS.select { |_, kind| line.match?(kind[:pattern]) }.keys
-    return [] if kinds.empty?
+    return kinds if tweet || kinds.empty?
     return [] if line =~ SPEECH && ($1 == 'You' || pcs.include?($1))
     kinds.delete('raffles') if RAFFLE_ROOM.any? { |pat| line.match?(pat) }
     kinds.delete('limited_treasures') if room.match?(/limited treasures/i)
@@ -149,7 +153,8 @@ module AnnounceMonitor
       raw.scan(OUTPUT) { |(style)| @mono = (style == 'mono') }
       next if skip || @mono
       line  = text_of(raw).strip
-      kinds = kinds_for(line, pcs: (DRRoom.pcs rescue []).to_a, room: XMLData.room_title.to_s)
+      kinds = kinds_for(line, pcs: (DRRoom.pcs rescue []).to_a, room: XMLData.room_title.to_s,
+                              tweet: raw.match?(TWEET))
       @queue << [kinds, line] unless kinds.empty?
     end
   end
