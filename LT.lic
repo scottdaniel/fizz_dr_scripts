@@ -1,0 +1,280 @@
+=begin
+  LT.lic - Limited Treasures
+
+  Buys from Gortik's Limited Treasures shop the moment the sale opens, then
+  looks at all three silversteel stands and echoes what's on them. Lich
+  version of Lycette's Genie scripts limited, limited1, limited2 and limited3.
+
+  Start it in the Limited Treasures lounge (the room with a silversteel door
+  and a door curtained with deathfiber) before Gortik opens the sale. When the
+  deathfiber curtain powers down, or a customer goes through the curtained
+  door, it pauses your other scripts, goes through the curtained door, buys
+  what you named in the order you named it, looks at the stands, and
+  unpauses your scripts. That's the fastest way in: start it any time
+  before the sale and it goes the instant the curtain comes down.
+
+  Usage:
+    ;LT                          just go in and look at the stands
+    ;LT mask greatcoat bookbag   buy these, in this order
+    ;LT "half mask" greatcoat    quote (or comma-separate) names with spaces
+    ;LT now mask greatcoat       only if the sale is already open (you got
+                                 there late): go in and buy right away.
+                                 Before the curtain comes down, this walks
+                                 you into the trap.
+
+  Good to know:
+    - Don't GO before the curtain powers down. Rushing the curtained door
+      early springs a trap (a volley of stones). If the script hits it anyway,
+      it goes back to waiting for the curtain.
+    - In a group? If your leader takes you in first, the script notices you
+      arrived and starts buying.
+    - Have the coins on you.
+    - Keep a hand free. If both hands are full, it stows your left hand
+      before the next buy.
+    - It never buys the rock. Gortik: GET the rock to check how much your
+      family has bought this year; he won't refund it if you buy it.
+    - Each stand sells only 10, so name the one you want most first.
+=end
+
+no_pause_all
+
+module LimitedTreasures
+  LOUNGE      = 'Limited Treasures, Lounge'.freeze
+  SALES_FLOOR = 'Limited Treasures, Sales Floor'.freeze
+  STANDS      = { 'First' => 'stand', 'Second' => 'second stand', 'Third' => 'third stand' }.freeze
+
+  # A line can arrive behind a prompt, like "J> Refia hands the sales clerk some coins."
+  PROMPT = '(?:[^\s>]*>\s*)*'.freeze
+
+  # "Lightning crackles over the surface of the deathfiber curtain as it powers down its defenses."
+  CURTAIN_DOWN = /deathfiber curtain as it powers down its defenses/
+  # "Isthu'rath'a Saar'adu Kzin went through a curtained door." Only the lounge
+  # side is a plain "curtained door"; the sales floor side is a "curtained silversteel door".
+  WENT_THROUGH = /^(.+?) went through a curtained door\./
+  # Gortik goes through first and has been in and out before the sale, so he doesn't count
+  STAFF        = /\bGortik\b/
+  # The room title, when you go in or your group leader takes you in
+  ARRIVED      = /\[Limited Treasures, Sales Floor\]/
+  # "Malakye hastily rushes the door.  A loud *click* can be heard as his foot settles."
+  # "A volley of razor sharp stones fires out from the shadows toward Malakye!"
+  TRAPPED      = [/^#{PROMPT}You\b.*\brush the door/, /fires? out from the shadows toward you\b/].freeze
+  # Only lines meant for you: a retry after the GO actually worked would take you back out
+  GO_FAILED    = [
+    /^#{PROMPT}(?:What were you referring to|I could not find|You can't go there).*/,
+    /^#{PROMPT}You (?:can't|cannot|must|need|will have to|'ll have to)\b.*/
+  ].freeze
+
+  # "The sales clerk hands you a fanciful silversteel half mask ..."
+  # (others see "Refia hands the sales clerk some coins." / "The sales clerk hands Refia a ...")
+  BOUGHT = [/sales clerk hands you\b.*/, /^#{PROMPT}You decide to purchase\b.*/].freeze
+  # The clerk's answers to you that aren't a sale. "Buy what?" is the game's
+  # answer for something that isn't there; the rest cover money, a full hand
+  # and your family's limit without knowing their exact words.
+  NOT_BOUGHT = [
+    /^#{PROMPT}Buy what\?.*/,
+    /^#{PROMPT}You (?:can't|cannot|need|don't|realize|must|have no|aren't|are not)\b.*/,
+    /^#{PROMPT}(?:The|A) (?:sales )?clerk (?!loudly proclaims|hands (?!you\b)).*\byour?\b.*/,
+    /^#{PROMPT}There (?:is|are) no\b.*/,
+    /^#{PROMPT}(?:What were you referring to|I could not find)\b.*/
+  ].freeze
+  # A clerk who wants you to say it twice gets one more BUY
+  CONFIRM = /\bconfirm\b|\bagain\b/i
+
+  # "On the silversteel stand you see a ... and a ...", or a shop list:
+  # "On the silversteel stand, you see:" followed by indented "  a ... for 10 platinum Kronars" lines
+  STAND_CONTENTS = /^#{PROMPT}On (?:the|a|an) [^,]*?stand,? you see:?\s*(.*)$/
+  STAND_EMPTY    = /^#{PROMPT}(?:There(?: is|'s)|You see|You don't see) nothing\b/i
+  STAND_MISSING  = /^#{PROMPT}(?:What were you referring to|I could not find)\b/
+  LIST_ITEM      = /^\s{2,}(\S.*)$/
+
+  module_function
+
+  def strip_prompt(line)
+    line.to_s.sub(/\A(?:[^\s>]*>\s*)+/, '')
+  end
+
+  # "now mask, half mask" or 'now mask "half mask"' => [true, ["mask", "half mask"]]
+  def parse_args(raw)
+    words = raw.to_s.strip
+    now = words.match?(/\Anow\b/i)
+    words = words.sub(/\Anow\b,?\s*/i, '')
+    items = words.include?(',') ? words.split(',') : words.scan(/"([^"]*)"|(\S+)/).map { |quoted, word| quoted || word }
+    [now, items.map { |item| item.delete('"').strip }.reject(&:empty?)]
+  end
+
+  # Is this line the sale opening (or you arriving on the sales floor)?
+  def opening?(line, in_lounge)
+    text = strip_prompt(line)
+    return true if text =~ ARRIVED
+    return false unless in_lounge
+    return true if text =~ CURTAIN_DOWN
+
+    went = text.match(WENT_THROUGH)
+    !went.nil? && went[1] !~ STAFF
+  end
+
+  def in_room?(title)
+    XMLData.room_title.to_s.include?(title)
+  end
+
+  def wait_for_opening
+    loop do
+      return if in_room?(SALES_FLOOR)
+      return if opening?(get, in_room?(LOUNGE))
+    end
+  end
+
+  # :inside, :trap (the curtain was still up), :lost (not in the lounge) or :failed
+  def enter_sales_floor
+    5.times do
+      return :inside if in_room?(SALES_FLOOR)
+      return :lost unless in_room?(LOUNGE)
+
+      result = DRC.bput('go curtained door', { 'timeout' => 3 }, ARRIVED, *TRAPPED, *GO_FAILED)
+      return :inside if result =~ ARRIVED
+      return :trap if TRAPPED.any? { |re| result =~ re }
+
+      pause 0.25 unless result.empty?
+    end
+    in_room?(SALES_FLOOR) ? :inside : :failed
+  end
+
+  def free_a_hand
+    DRCI.stow_hand('left') if DRC.left_hand && DRC.right_hand
+  end
+
+  # [true, what the clerk said] or [false, why not]
+  def buy(item)
+    2.times do |attempt|
+      return [false, "couldn't get onto the sales floor"] unless enter_sales_floor == :inside
+
+      free_a_hand
+      result = DRC.bput("buy #{item}", { 'timeout' => 5 }, *BOUGHT, *NOT_BOUGHT)
+      text = strip_prompt(result)
+      return [true, text] if BOUGHT.any? { |re| result =~ re }
+      return [false, 'no answer from the clerk'] if text.empty?
+
+      # One more try if the clerk wants a confirmation, or if you got carried
+      # back out to the lounge (say your own GO went through after your group
+      # leader had already taken you in)
+      again = text =~ CONFIRM || (text =~ /Buy what/ && !in_room?(SALES_FLOOR))
+      return [false, text] unless again && attempt.zero?
+    end
+  end
+
+  # What's on a stand, as a sentence
+  def look_on(stand)
+    clear
+    put "look on #{stand}"
+    listed = nil
+    timer = Time.now
+    while Time.now - timer < 4
+      line = get?
+      if line.nil?
+        break if listed && !listed.empty? && Time.now - timer > 1
+        pause 0.05
+        next
+      end
+
+      if listed
+        if (item = line.match(LIST_ITEM))
+          listed << item[1].strip
+        elsif !line.strip.empty? && !listed.empty?
+          break
+        end
+        next
+      end
+
+      text = strip_prompt(line)
+      if (seen = text.match(STAND_CONTENTS))
+        rest = seen[1].strip.sub(/\.\z/, '')
+        return rest unless rest.empty?
+
+        listed = []
+      elsif text =~ STAND_EMPTY
+        return 'nothing'
+      elsif text =~ STAND_MISSING
+        return "no #{stand} here"
+      end
+    end
+    return listed.join('; ') if listed && !listed.empty?
+
+    listed ? 'nothing listed' : "no answer to LOOK ON #{stand.upcase}"
+  end
+
+  def look_at_stands
+    STANDS.each do |label, stand|
+      DRC.message("LT: #{label} stand: #{look_on(stand)}")
+    end
+  end
+end
+
+LTS = LimitedTreasures
+
+if Script.current.vars[1].to_s =~ /\A(?:help|\?)\z/i
+  respond <<~HELP
+    LT: buys Limited Treasures the moment the sale opens, then looks at the stands.
+      ;LT                          just go in and look at the stands
+      ;LT mask greatcoat bookbag   buy these, in this order
+      ;LT "half mask" greatcoat    quote (or comma-separate) names with spaces
+      ;LT now mask                 sale already open? go in right away (before it opens: trap!)
+  HELP
+  exit
+end
+
+now, items = LTS.parse_args(Script.current.vars[0])
+rocks, items = items.partition { |item| item =~ /\brock\b/i }
+unless rocks.empty?
+  DRC.message("LT: Not buying the rock. GET it to check your family's purchases; Gortik won't refund it.")
+end
+now ||= LTS.in_room?(LTS::SALES_FLOOR)
+
+unless now || LTS.in_room?(LTS::LOUNGE)
+  DRC.message("LT: You're not in the Limited Treasures lounge. I'll wait, but I only go through the curtained door from the lounge.")
+end
+if !items.empty? && DRC.left_hand && DRC.right_hand
+  DRC.message('LT: Both your hands are full. Free one, or I stow your left hand before the first buy.')
+end
+
+plan = items.empty? ? 'look at the stands' : "buy #{items.join(', ')}, then look at the stands"
+echo(now ? "Going in now to #{plan}." : "Waiting for the curtain to power down, then I'll #{plan}.")
+
+paused = []
+before_dying { DRC.unpause_all_list(paused) unless paused.empty? }
+
+loop do
+  LTS.wait_for_opening unless now
+  now = false
+  paused = DRC.smart_pause_all if paused.empty?
+
+  case LTS.enter_sales_floor
+  when :inside
+    break
+  when :trap
+    DRC.message('LT: The curtain was still up and the trap went off. Waiting for it to power down.')
+    DRC.unpause_all_list(paused)
+    paused = []
+  when :lost
+    DRC.message("LT: You're not in the Limited Treasures lounge, so I can't go through the curtained door.")
+    exit
+  else
+    DRC.message("LT: Couldn't get through the curtained door. GO CURTAINED DOOR yourself, then ;LT now #{items.join(' ')}".rstrip)
+    exit
+  end
+end
+
+results = items.map { |item| [item, *LTS.buy(item)] }
+results.each do |item, bought, said|
+  DRC.message("LT: #{bought ? 'Bought' : "Didn't get"} #{item}: #{said}")
+end
+
+LTS.look_at_stands if LTS.in_room?(LTS::SALES_FLOOR)
+
+unless results.empty?
+  got = results.select { |_, bought, _| bought }.map(&:first)
+  missed = results.reject { |_, bought, _| bought }.map(&:first)
+  summary = []
+  summary << "bought #{got.join(', ')}" unless got.empty?
+  summary << "didn't get #{missed.join(', ')}" unless missed.empty?
+  DRC.message("LT: Done: #{summary.join('; ')}.")
+end
