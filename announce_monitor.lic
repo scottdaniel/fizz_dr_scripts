@@ -10,7 +10,7 @@
        powers down)
     3) creature capture, e.g. "Marine creatures are loose on Andreshlew Island! ...",
        with a reminder to ;capture-critter hollow_eve to join in, and
-       "All of the creatures have been captured!" when it's over
+       "All of the creatures have been captured!" or "...have been caught!" when it's over
   Every message starts with the character's name, so one webhook can serve all
   of your characters.
 
@@ -54,8 +54,8 @@ module AnnounceMonitor
     'raffles'           => { label: 'Raffle', pattern: /\braffles?\b/i, reminder: ';go2 raffle (or 16330) to join in' },
     'limited_treasures' => { label: 'Limited Treasures', pattern: /\blimited\s+treasures?\b/i,
                              reminder: ';go2 10205 to get to the Limited Treasures lounge' },
-    'creature_capture'  => { label: 'Creature Capture', pattern: /creatures (?:are loose|have been captured)/i,
-                             over: /have been captured/i, reminder: ';capture-critter hollow_eve to join in' }
+    'creature_capture'  => { label: 'Creature Capture', pattern: /creatures (?:are loose|have been (?:captured|caught))/i,
+                             over: /have been (?:captured|caught)/i, reminder: ';capture-critter hollow_eve to join in' }
   }.freeze
 
   # Lines that mention a raffle but are just the raffle room going about its business
