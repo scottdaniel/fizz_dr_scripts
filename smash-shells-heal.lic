@@ -3,7 +3,8 @@
 
   Fork of smash-shells.lic. Instead of walking off when you get hurt, it goes
   to the healer's room, whispers to the healer, waits for the heal, and goes
-  back to smashing shells. If the healer isn't there (or can't fix you), it
+  back to smashing shells. The healer runs ;healer with you in her friends
+  list. If the healer isn't there (or can't fix you), it
   heals you with your own herbs (;heal-remedy) right there, waits for them to
   work, and then walks back to the shells. When any herb ;herb-stock can buy
   is down to RESTOCK_BELOW parts, it restocks and comes back.
@@ -26,7 +27,8 @@
 
 HEAL_ROOM = 16_169
 HEALER = 'Azaylea'
-HEAL_COMMAND = 'whisper azay meow'
+# ;healer only answers a whisper of exactly "heal"
+HEAL_COMMAND = 'whisper azay heal'
 
 HEAL_BELOW_VITALITY = 80
 # 3 is "cuts and bruises"; 1-2 are minor abrasions and scratches
@@ -47,8 +49,9 @@ MAX_TURNED_AWAY = 2
 HANDS = ['right hand', 'left hand'].freeze
 
 Flags.add('shell-fragments', 'shell explodes')
+# ;healer whispers "Done!" when it has finished with you
 Flags.add('healed', 'The pain of your wounds abruptly ceases', 'but nothing else seems to happen',
-          'gradually ebbs away')
+          'gradually ebbs away', /#{HEALER}\b.*whispers.*"Done!"/)
 
 settings = get_settings
 trash_items = settings.hollow_eve_junk.map { |x| /\b#{x}\b/i }
