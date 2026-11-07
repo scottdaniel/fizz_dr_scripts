@@ -10,6 +10,7 @@
     ;stash forging         # just forging gear
     ;stash shaping         # just shaping gear
     ;stash enchanting      # just enchanting gear
+    ;stash extras          # just your extras
     ;stash all             # crafting gear plus your extras
     ;stash add <item>      # add something to your extras (taps it first to check the name)
     ;stash remove <item>   # take something off your extras
@@ -29,7 +30,9 @@
   anywhere goes back where it came from.
 
   What went where is written to STASHED so ;unstash gets back exactly those
-  things and puts them back where they came from.
+  things and puts them back where they came from. Each one is written down
+  with what it's for (forging, shaping, enchanting or extras), so
+  ;unstash forging and the like get back just that.
 =end
 
 HOME_ROOM = 14_665
@@ -128,13 +131,27 @@ def settle
   false
 end
 
-def gear_for(disciplines, settings)
+# All your crafting gear, as item => the disciplines it's for, in yaml order.
+# Something two disciplines use comes back with ;unstash for either one.
+def crafting_gear(settings)
   tools = {
     'forging'    => settings.forging_tools.to_a,
     'shaping'    => settings.shaping_tools.to_a,
     'enchanting' => settings.enchanting_tools.to_a
   }
-  disciplines.flat_map { |discipline| tools[discipline] + SUPPLIES[discipline] }.uniq
+  DISCIPLINES.each_with_object({}) do |discipline, gear|
+    (tools[discipline] + SUPPLIES[discipline]).each { |item| gear[item] = gear.fetch(item, []) | [discipline] }
+  end
+end
+
+# The part of the crafting gear these disciplines use
+def gear_for(disciplines, gear)
+  gear.select { |_item, used_for| (used_for & disciplines).any? }
+end
+
+# Your extras that aren't crafting gear, as item => ['extras']
+def extras_for(gear)
+  (load_extras - gear.keys).to_h { |item| [item, ['extras']] }
 end
 
 # Gets the item into your hand, from the container if one is given. Returns
@@ -172,7 +189,7 @@ def put_back(item, *places)
 end
 
 # gear comes out of the crafting container, one of each; extras come from
-# anywhere, every one you have
+# anywhere, every one you have. Both are item => what it's for.
 def stash_items(gear, extras, container)
   unless hands_empty?
     DRC.message('stash: empty your hands first.')
@@ -190,8 +207,9 @@ def stash_items(gear, extras, container)
   placed = Hash.new { |hash, spot| hash[spot] = [] }
   left_over = []
 
-  jobs = gear.map { |item| [item, container, true] } + extras.map { |item| [item, nil, false] }
-  jobs.each do |item, take_from, just_one|
+  jobs = gear.map { |item, used_for| [item, used_for, container, true] } +
+         extras.map { |item, used_for| [item, used_for, nil, false] }
+  jobs.each do |item, used_for, take_from, just_one|
     if (STASH_SPOTS - closed_spots.keys).empty?
       left_over << item if DRCI.exists?(item, take_from)
       next
@@ -207,7 +225,9 @@ def stash_items(gear, extras, container)
       end
 
       placed[spot] << item
-      stashed << { 'item' => item, 'name' => name, 'spot' => spot, 'from' => from }
+      # A copy each time: two codices sharing one array would be written as a
+      # YAML alias, which safe_load refuses to read back
+      stashed << { 'item' => item, 'name' => name, 'spot' => spot, 'from' => from, 'for' => used_for.dup }
       save_yaml(STASHED, stashed)
       break if just_one
     end
@@ -248,7 +268,7 @@ def add_extra(item)
   where = if container then ", in your #{container}"
           elsif state then ", that you're #{state}"
           end
-  DRC.message("stash: added #{item} (#{name || result}#{where}). ;stash all will stash every one you have.")
+  DRC.message("stash: added #{item} (#{name || result}#{where}). ;stash extras or ;stash all will stash every one you have.")
 end
 
 def remove_extra(item)
@@ -261,10 +281,12 @@ def remove_extra(item)
   end
 end
 
-def show_list(settings)
+def show_list(gear)
+  DISCIPLINES.each do |discipline|
+    DRC.message("stash: #{discipline} gear (;stash #{discipline}): #{gear_for([discipline], gear).keys.join(', ')}")
+  end
   extras = load_extras
-  DRC.message("stash: crafting gear (;stash crafting): #{gear_for(DISCIPLINES, settings).join(', ')}")
-  DRC.message("stash: extras (;stash all adds these): #{extras.empty? ? 'none' : extras.join(', ')}")
+  DRC.message("stash: extras (;stash extras): #{extras.empty? ? 'none' : extras.join(', ')}")
 
   stashed = load_yaml(STASHED, [])
   if stashed.empty?
@@ -273,28 +295,35 @@ def show_list(settings)
   end
 
   stashed.group_by { |entry| entry['spot'] }.each do |spot, entries|
-    DRC.message("stash: stashed #{spot}: #{entries.map { |entry| entry['name'] || entry['item'] }.join(', ')}")
+    names = entries.map do |entry|
+      used_for = entry['for'] ? " (#{entry['for'].join('/')})" : ''
+      "#{entry['name'] || entry['item']}#{used_for}"
+    end
+    DRC.message("stash: stashed #{spot}: #{names.join(', ')}")
   end
+  DRC.message('stash: ;unstash gets it all back, or ;unstash forging, shaping, enchanting, crafting or extras gets just that.')
 end
 
 settings = get_settings
 command = Script.current.vars[1].to_s.downcase
 item = Script.current.vars[2..].to_a.compact.join(' ').downcase.strip
-crafting_gear = gear_for(DISCIPLINES, settings)
+gear = crafting_gear(settings)
 
 case command
 when 'crafting'
-  stash_items(crafting_gear, [], settings.crafting_container)
+  stash_items(gear, {}, settings.crafting_container)
 when *DISCIPLINES
-  stash_items(gear_for([command], settings), [], settings.crafting_container)
+  stash_items(gear_for([command], gear), {}, settings.crafting_container)
+when 'extras'
+  stash_items({}, extras_for(gear), settings.crafting_container)
 when 'all'
-  stash_items(crafting_gear, load_extras - crafting_gear, settings.crafting_container)
+  stash_items(gear, extras_for(gear), settings.crafting_container)
 when 'add'
   add_extra(item)
 when 'remove'
   remove_extra(item)
 when 'list'
-  show_list(settings)
+  show_list(gear)
 else
-  DRC.message('stash: use ;stash crafting, forging, shaping, enchanting, all, add <item>, remove <item>, or list.')
+  DRC.message('stash: use ;stash crafting, forging, shaping, enchanting, extras, all, add <item>, remove <item>, or list.')
 end

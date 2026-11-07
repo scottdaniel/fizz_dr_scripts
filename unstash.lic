@@ -17,8 +17,15 @@
   room to put something away, the rest stays stashed and on the list for
   next time.
 
+  ;stash writes down what each thing is for, so you can get back part of it:
+
   Usage:
-    ;unstash
+    ;unstash               # everything
+    ;unstash crafting      # forging, shaping and enchanting gear
+    ;unstash forging       # just forging gear
+    ;unstash shaping       # just shaping gear
+    ;unstash enchanting    # just enchanting gear
+    ;unstash extras        # just your extras
 =end
 
 HOME_ROOM = 14_665
@@ -26,6 +33,10 @@ HOME_TITLE = /Visenyia's Home/
 
 # What's stashed right now and where, written by ;stash
 STASH_LIST = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
+
+# What ;stash says each thing is for
+CRAFTING = %w[forging shaping enchanting].freeze
+GROUPS = (CRAFTING + ['extras']).freeze
 
 # bput returns only the matched text, so match the whole line to check the item name
 GET_SUCCESS = [/^You get .*/, /^You pick up .*/].freeze
@@ -118,9 +129,30 @@ def fetch(entry, container)
   :container_full
 end
 
+# groups nil means everything, including anything stashed before ;stash
+# wrote down what it's for
+def wanted?(entry, groups)
+  groups.nil? || (entry['for'].to_a & groups).any?
+end
+
+asked_for = Script.current.vars[1].to_s.downcase
+groups = case asked_for
+         when '', 'all' then nil
+         when 'crafting' then CRAFTING
+         when *GROUPS then [asked_for]
+         else
+           DRC.message('unstash: use ;unstash for everything, or ;unstash forging, shaping, enchanting, crafting or extras.')
+           exit
+         end
+
 stash_list = load_stash_list
 if stash_list.empty?
   DRC.message('unstash: nothing is stashed right now.')
+  exit
+end
+
+if stash_list.none? { |entry| wanted?(entry, groups) }
+  DRC.message("unstash: nothing for #{asked_for} is stashed right now. ;stash list shows what is.")
   exit
 end
 
@@ -140,6 +172,8 @@ results = Hash.new { |hash, result| hash[result] = [] }
 
 (stash_list.size - 1).downto(0) do |index|
   entry = stash_list[index]
+  next unless wanted?(entry, groups)
+
   result = fetch(entry, container)
   results[result] << "#{entry['name'] || entry['item']} (#{entry['spot']})"
   break if result == :container_full
@@ -153,4 +187,4 @@ DRC.message("unstash: got back: #{results[:got].join(', ')}") unless results[:go
 DRC.message("unstash: not there anymore, dropped from the list: #{results[:missing].join(', ')}") unless results[:missing].empty?
 DRC.message("unstash: found something else first, left it and kept on the list: #{results[:wrong].join(', ')}") unless results[:wrong].empty?
 DRC.message("unstash: couldn't pick up, kept on the list: #{results[:failed].join(', ')}") unless results[:failed].empty?
-DRC.message("unstash: no room to put #{results[:container_full].first} away. #{stash_list.size} item(s) still stashed and on the list.") unless results[:container_full].empty?
+DRC.message("unstash: no room to put #{results[:container_full].first} away. #{stash_list.count { |entry| wanted?(entry, groups) }} item(s) still stashed and on the list.") unless results[:container_full].empty?
