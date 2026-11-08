@@ -3,16 +3,16 @@ Ruby scripts for Lich5 for the game known as DragonRealms
 
 This is the `scripts/custom` folder of a Lich5 DragonRealms install, for Fizzlestiks. Run any of them as `;name`.
 
-## Stashing at home
+## Stashing in the vault
 
-Fizzlestiks's house is reached with `;go2 14665` then `MOVE ARCH`. Both scripts go there on their own (or start right away if you're already inside) and leave you in the house when they're done.
+Both scripts use your vault at your hometown's Carousel (Crossing is `;go2 8285`). They walk there, go through the first free booth (blackwood, ironwood, rosewood, then platinum, which is restricted for Fizzlestiks), `PULL LEVER`, `GO DOOR` and `OPEN VAULT`. When they're done, or if anything goes wrong on the way, they close the vault and leave you in the Carousel. If rent is due they stop at the arch: pay at the Carousel desk (`GO DESK`, 5,000 Kronars for 30 days).
 
 | Script | What it does |
 |---|---|
-| `stash.lic` | Puts things away in the house so your containers have room. `;stash crafting` (forging, shaping and enchanting gear: the yaml's `forging_tools`, `shaping_tools` and `enchanting_tools` plus crafting books, logbooks, oil, flux and the mana fount), `;stash forging`, `;stash shaping`, `;stash enchanting`, `;stash extras` (just your extras), `;stash all` (crafting gear plus your extras), `;stash add <item>` (taps it to check the name, then adds it to your extras), `;stash remove <item>`, `;stash list`. Items go under the bed, then on the wall, in the wall, on the bookcase, on the table, skipping any spot that's full. |
-| `unstash.lic` | Gets back everything `stash` put away, and only that, checking each item's full name so look-alikes stored at home stay put. Each thing goes back in the container it came from. `;unstash forging`, `;unstash shaping`, `;unstash enchanting`, `;unstash crafting` (all three) or `;unstash extras` gets back just that part, since `stash` writes down what each thing is for. |
+| `stash.lic` | Puts things in your vault so your containers have room. `;stash crafting` (forging, shaping, enchanting and outfitting gear: the yaml's `forging_tools`, `shaping_tools`, `enchanting_tools` and `outfitting_tools` plus crafting books, logbooks, oil, flux and the mana fount; and the materials each one uses, found with LOOK IN across your `storage_containers`: ingots, nuggets and metal bars; lumber, bone stacks and stone deeds; sigil-scrolls; leather, cloth, yarn and thread), `;stash forging`, `;stash shaping`, `;stash enchanting`, `;stash outfitting`, `;stash extras` (just your extras), `;stash all` (crafting gear and materials plus your extras), `;stash add <item>` (taps it to check the name, then adds it to your extras), `;stash remove <item>`, `;stash list`. If the vault fills up, the rest stays where it is. |
+| `unstash.lic` | Gets back everything `stash` put away, and only that, checking each item's full name so other things in your vault stay put. Each thing goes back in the container it came from. `;unstash forging`, `;unstash shaping`, `;unstash enchanting`, `;unstash outfitting`, `;unstash crafting` (all four) or `;unstash extras` gets back just that part, since `stash` writes down what each thing is for. |
 
-Both keep their data in Lich's `data/DR/<character>/` folder: `stash.yaml` is what's stashed right now and where, `stash-extras.yaml` is your extras list.
+Both keep their data in Lich's `data/DR/<character>/` folder: `stash.yaml` is what's in the vault right now and where it came from, `stash-extras.yaml` is your extras list.
 
 ## Other scripts
 

@@ -1,51 +1,51 @@
 =begin
   stash.lic
 
-  Goes home (;go2 14665, MOVE ARCH, unless you're already inside), stashes
-  things out of your containers, and leaves you inside the house. ;unstash
-  gets it all back.
+  Puts things from your containers in your vault at your hometown's Carousel
+  (Crossing: ;go2 8285, through an arch, PULL LEVER, GO DOOR, OPEN VAULT),
+  then closes it and leaves you in the Carousel. ;unstash gets it all back.
 
   Usage:
-    ;stash crafting        # forging, shaping and enchanting gear
-    ;stash forging         # just forging gear
-    ;stash shaping         # just shaping gear
-    ;stash enchanting      # just enchanting gear
+    ;stash crafting        # forging, shaping, enchanting and outfitting gear and materials
+    ;stash forging         # just forging gear and materials
+    ;stash shaping         # just shaping gear and materials
+    ;stash enchanting      # just enchanting gear and materials
+    ;stash outfitting      # just outfitting gear and materials
     ;stash extras          # just your extras
-    ;stash all             # crafting gear plus your extras
+    ;stash all             # crafting gear and materials plus your extras
     ;stash add <item>      # add something to your extras (taps it first to check the name)
     ;stash remove <item>   # take something off your extras
     ;stash list            # show your gear, your extras, and what's stashed right now
 
-  Crafting gear is forging_tools, shaping_tools and enchanting_tools from your
-  yaml, plus the books, logbooks and supplies in SUPPLIES below. It comes out
-  of your crafting_container, one of each.
+  Crafting gear is forging_tools, shaping_tools, enchanting_tools and
+  outfitting_tools from your yaml, plus the books, logbooks and supplies in
+  SUPPLIES below. It comes out of your crafting_container, one of each.
+
+  Crafting materials are whatever LOOK IN shows in your crafting_container
+  and storage_containers that MATERIALS below says a discipline uses: ingots
+  and metal bars for forging, lumber and bone stacks for shaping, leather and
+  cloth for outfitting, and so on. Every one gets stashed, from whichever
+  container it's in.
 
   Extras are your own list, kept in EXTRAS. It starts as codex, textbook and
   contract. Every one of them you're carrying gets stashed, from whichever
   container it's in.
 
-  Each item tries STASH_SPOTS in order: under the bed, on the wall, in the
-  wall, on the bookcase, on the table. A spot that's full, or that the game
-  doesn't take, is skipped for the rest of the run. Anything that won't fit
-  anywhere goes back where it came from.
+  If the vault is full, the rest stays where it is. If rent is due, nothing
+  happens: pay at the Carousel desk first (GO DESK, 5,000 Kronars for 30
+  days).
 
-  What went where is written to STASHED so ;unstash gets back exactly those
+  What went in is written to STASHED so ;unstash gets back exactly those
   things and puts them back where they came from. Each one is written down
-  with what it's for (forging, shaping, enchanting or extras), so
+  with what it's for (forging, shaping, enchanting, outfitting or extras), so
   ;unstash forging and the like get back just that.
 =end
 
-HOME_ROOM = 14_665
-HOME_TITLE = /Visenyia's Home/
-
-# What's stashed right now and where. Shared with unstash.
+# What's stashed right now. Shared with unstash.
 STASHED = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
 # Your extras, changed with ;stash add and ;stash remove
 EXTRAS = File.join(DATA_DIR, XMLData.game, Char.name, 'stash-extras.yaml')
 DEFAULT_EXTRAS = %w[codex textbook contract].freeze
-
-# Tried in this order
-STASH_SPOTS = ['under bed', 'on wall', 'in wall', 'on bookcase', 'on table'].freeze
 
 # Crafting gear besides each discipline's tools from your yaml
 SUPPLIES = {
@@ -63,24 +63,63 @@ SUPPLIES = {
     'artificing book', # book of apprentice artificing instructions
     'enchanting logbook',
     'fount' # fragile rough mana fount
-  ]
+  ],
+  'outfitting' => []
 }.freeze
 # ;stash crafting does all of these
 DISCIPLINES = SUPPLIES.keys.freeze
+
+# What each discipline crafts from, matched against the item names LOOK IN
+# shows ("huge pewter bar", "heavy wool cloth"). Every match gets stashed.
+MATERIALS = {
+  'forging'    => {
+    'ingots'     => /\bingot$/i,
+    'nuggets'    => /\bnugget$/i,
+    'metal bars' => /\bbar$/i
+  },
+  'shaping'    => {
+    'lumber'      => /\blumber$/i,
+    'bone stacks' => /\bstack$/i,
+    'stone deeds' => /\b(?:pebble|stone|rock|boulder) \S+ deed$/i # rock quartzite deed, for carving
+  },
+  'enchanting' => {
+    'sigil-scrolls' => /\bsigil-scroll$/i
+  },
+  'outfitting' => {
+    'leather' => /\bleather$/i,
+    # The fabrics sorter's base-sorting.yaml counts as crafting, so not
+    # chamois or cleaning cloth
+    'cloth'   => /\b(?:burlap|cotton|linen|silk|wool) cloth$/i,
+    'yarn'    => /\byarn$/i,
+    'thread'  => /\bthread$/i
+  }
+}.freeze
+
+# Getting in and out of the vault, as Fizzlestiks did it by hand at the
+# Crossing Carousel on 2026-11-07. Plain GO ARCH is the platinum arch, which
+# the attendant blocks ("Sorry, but access to that arch is restricted."), so
+# the arches are named; the blackwood one worked. The busy-booth replies come
+# from Tirost's Genie vault.cmd.
+ARCHES = ['go blackwood arch', 'go ironwood arch', 'go rosewood arch', 'go platinum arch'].freeze
+ARCH_IN = /escorts you through/
+RENT_DUE = /\brent\b/i
+ARCH_BUSY = /restricted|blocks|someone|using|Sorry/
+LEVER_PULLED = /door pops open/
+VAULT_OPENED = [/^The vault opens/, /already open/i].freeze
+CHAMBER = /Chamber/
 
 # bput returns only the matched text, so these match the whole line
 GET_SUCCESS = [/^You get .*/, /^You pick up .*/].freeze
 PUT_SUCCESS = [/^You put .*/].freeze
 TAP_SUCCESS = [/^You tap\s(?!into).*/, /^As you tap .*/, /^You (?:thump|drum) your finger.*/].freeze
 NOT_FOUND = [/^What were you referring to/, /^I could not find/, /^I don't know what you are referring to/].freeze
-# The spot is full: skip it for everything else
-SPOT_FULL = [/no room/i, /isn't any more room/i, /completely full/i].freeze
-# Just this item won't go there
+# The vault's full message isn't known yet, so these are guesses
+VAULT_FULL = [/no room/i, /isn't any more room/i, /\bfull\b/i, /too many/i, /maximum/i].freeze
+# Just this item won't go in
 PUT_FAILURE = [/^You can't/, /^You must/, /^Weirdly, you can't/, /is too .* to (fit|hold)/, /to fit in the/].freeze
 
-# "You put a book of apprentice shaping instructions under the bed."
-PUT_NAME = /^You put (?:a|an|some|the|your) (.+) (?:under|on|in) the /
 # "You get a paper-wrapped textbook from inside your grey rucksack."
+GET_NAME = /^You (?:get|pick up) (?:a|an|some|the|your) (.+?)(?: from .*)?\.$/
 GET_SOURCE = /from inside your (.+?)\.$/
 # "You tap some bundling rope inside your grey rucksack." or "... that you are holding."
 TAP_NAME = /^You tap (?:a|an|some|the|your) (.+?)(?: inside your (.+?)| that you are (\w+))?\.$/
@@ -98,30 +137,11 @@ def load_extras
   load_yaml(EXTRAS, DEFAULT_EXTRAS).dup
 end
 
-def home?
-  # room_title missed the house once when already inside; room_name is the
-  # "[Visenyia's Home]" line itself, so check both
-  [XMLData.room_title, XMLData.room_name].any? { |title| title.to_s =~ HOME_TITLE }
-end
-
-def go_home
-  return true if home?
-  return false unless DRCT.walk_to(HOME_ROOM)
-
-  DRC.bput('move arch', /^You walk in/, /^What were you referring to/, /^You can't/, /^You don't/)
-  10.times do
-    return true if home?
-
-    pause 0.5
-  end
-  false
-end
-
 def hands_empty?
   DRC.right_hand.nil? && DRC.left_hand.nil?
 end
 
-# The hand display can lag the game text by a moment
+# The hand display and room title can lag the game text by a moment
 def settle
   10.times do
     return true if yield
@@ -131,13 +151,85 @@ def settle
   false
 end
 
+def in_chamber?
+  [XMLData.room_title, XMLData.room_name].any? { |title| title.to_s =~ CHAMBER }
+end
+
+# Walks to the hometown's Carousel and opens your vault. Remembers how far it
+# got in @vault_steps so leave_vault can undo it. Says why and returns false
+# if it can't.
+def open_vault(settings)
+  @vault_steps = []
+  room = get_data('town')[settings.hometown]&.dig('vault', 'id')
+  unless room
+    DRC.message("stash: no vault listed for your hometown, #{settings.hometown}.")
+    return false
+  end
+  unless DRCT.walk_to(room)
+    DRC.message("stash: couldn't walk to the Carousel (room #{room}).")
+    return false
+  end
+  return false unless enter_booth
+
+  unless DRC.bput('pull lever', LEVER_PULLED, *NOT_FOUND, /^You can't/) =~ LEVER_PULLED
+    DRC.message("stash: pulling the lever didn't open the door.")
+    return false
+  end
+
+  DRC.bput('go door', /.+/)
+  unless settle { in_chamber? }
+    DRC.message("stash: GO DOOR didn't reach the Carousel Chamber. Room: #{XMLData.room_title.inspect}")
+    return false
+  end
+  @vault_steps << :chamber
+
+  result = DRC.bput('open vault', *VAULT_OPENED, RENT_DUE, *NOT_FOUND, /^You can't/)
+  unless VAULT_OPENED.any? { |pattern| result =~ pattern }
+    DRC.message("stash: the vault didn't open: #{result.empty? ? 'no reply' : result}")
+    return false
+  end
+  @vault_steps << :open
+  true
+end
+
+# Tries each arch, waiting a while if every booth is in use
+def enter_booth
+  6.times do
+    ARCHES.each do |arch|
+      result = DRC.bput(arch, ARCH_IN, RENT_DUE, ARCH_BUSY, *NOT_FOUND)
+      if result =~ ARCH_IN
+        @vault_steps << :booth
+        return true
+      end
+      if result =~ RENT_DUE
+        DRC.message('stash: vault rent is due. Pay it at the Carousel desk (GO DESK), then try again.')
+        return false
+      end
+    end
+    DRC.message('stash: every Carousel booth is busy. Waiting 10 seconds.')
+    pause 10
+  end
+  DRC.message('stash: gave up waiting for a Carousel booth.')
+  false
+end
+
+# Closes the vault and goes back out to the Carousel, as far as open_vault got
+def leave_vault
+  steps = @vault_steps.to_a
+  DRC.bput('close vault', /^You close the vault/, /already closed/i, /isn't open/i, *NOT_FOUND) if steps.include?(:open)
+  DRC.bput('go door', /.+/) if steps.include?(:chamber)
+  DRC.bput('go arch', /door slams closed/, /.+/) if steps.include?(:booth)
+  @vault_steps = []
+end
+
 # All your crafting gear, as item => the disciplines it's for, in yaml order.
 # Something two disciplines use comes back with ;unstash for either one.
 def crafting_gear(settings)
   tools = {
     'forging'    => settings.forging_tools.to_a,
     'shaping'    => settings.shaping_tools.to_a,
-    'enchanting' => settings.enchanting_tools.to_a
+    'enchanting' => settings.enchanting_tools.to_a,
+    'outfitting' => settings.outfitting_tools.to_a
   }
   DISCIPLINES.each_with_object({}) do |discipline, gear|
     (tools[discipline] + SUPPLIES[discipline]).each { |item| gear[item] = gear.fetch(item, []) | [discipline] }
@@ -154,6 +246,42 @@ def extras_for(gear)
   (load_extras - gear.keys).to_h { |item| [item, ['extras']] }
 end
 
+# The disciplines whose MATERIALS match this item name
+def material_uses(name)
+  DISCIPLINES.select { |discipline| MATERIALS[discipline].values.any? { |pattern| name =~ pattern } }
+end
+
+# The crafting materials these disciplines use that LOOK IN shows in your
+# containers, as [what to GET, what it's for, container, name LOOK showed].
+# GET only takes the one word right before the noun, so "huge pewter bar" is
+# fetched as "pewter bar".
+def find_materials(disciplines, settings)
+  return [] if disciplines.empty?
+
+  containers = ([settings.crafting_container] + settings.storage_containers.to_a).compact.uniq
+  containers.flat_map do |container|
+    DRCI.get_item_list(container, 'look').to_a.filter_map do |name|
+      used_for = material_uses(name)
+      [name.split.last(2).join(' '), used_for, container, name] if (used_for & disciplines).any?
+    end
+  end
+end
+
+# What ;unstash asks the vault for. A bare noun gets the word before it in
+# the name, so "codex" comes back as "kidskin codex" and not some other codex
+# already in the vault. Not for "flask of grey oil": whether GREY OIL works
+# there is unknown, so that stays OIL.
+def vault_address(item, name)
+  return item if item.include?(' ') || name.nil?
+
+  words = name.split
+  index = words.rindex(item)
+  return item unless index&.positive? && !words[0...index].include?('of')
+
+  adjective = words[index - 1]
+  %w[a an some the].include?(adjective) ? item : "#{adjective} #{item}"
+end
+
 # Gets the item into your hand, from the container if one is given. Returns
 # the GET line, or nil if you don't have one.
 def take_out(item, container)
@@ -162,22 +290,13 @@ def take_out(item, container)
   result if GET_SUCCESS.any? { |pattern| result =~ pattern } && settle { !hands_empty? }
 end
 
-# Puts the item in hand into the first open spot. Returns [spot, full item
-# name], or nil if nothing took it. Spots that are full or don't work go in
-# closed_spots (spot => why) so the rest of the run skips them.
-def put_in_spot(item, closed_spots)
-  (STASH_SPOTS - closed_spots.keys).each do |spot|
-    result = DRC.bput("put my #{item} #{spot}", *PUT_SUCCESS, *SPOT_FULL, *NOT_FOUND, *PUT_FAILURE)
-    return [spot, result[PUT_NAME, 1]] if PUT_SUCCESS.any? { |pattern| result =~ pattern }
+# Returns :put, :full, or :failed
+def put_in_vault(item)
+  result = DRC.bput("put my #{item} in vault", *PUT_SUCCESS, *VAULT_FULL, *NOT_FOUND, *PUT_FAILURE)
+  return :put if PUT_SUCCESS.any? { |pattern| result =~ pattern } && settle { hands_empty? }
+  return :full if VAULT_FULL.any? { |pattern| result =~ pattern }
 
-    if SPOT_FULL.any? { |pattern| result =~ pattern }
-      closed_spots[spot] = 'full'
-    elsif result.empty? || NOT_FOUND.any? { |pattern| result =~ pattern }
-      # You're holding the item, so the game doesn't know the spot
-      closed_spots[spot] = "didn't work"
-    end
-  end
-  nil
+  :failed
 end
 
 # Back where it came from, then the crafting container, then plain STOW
@@ -189,54 +308,70 @@ def put_back(item, *places)
 end
 
 # gear comes out of the crafting container, one of each; extras come from
-# anywhere, every one you have. Both are item => what it's for.
-def stash_items(gear, extras, container)
+# anywhere, every one you have. Both are item => what it's for. Then every
+# crafting material the material_disciplines use, from wherever it is.
+def stash_items(gear, extras, settings, material_disciplines = [])
+  container = settings.crafting_container
   unless hands_empty?
     DRC.message('stash: empty your hands first.')
     exit
   end
 
-  unless go_home
-    DRC.message("stash: couldn't get into the house from room #{HOME_ROOM}. " \
-                "Room title: #{XMLData.room_title.inspect}, room name: #{XMLData.room_name.inspect}")
-    exit
-  end
+  jobs = gear.map { |item, used_for| [item, used_for, container, true] } +
+         find_materials(material_disciplines, settings).map { |item, used_for, from, seen_as| [item, used_for, from, true, seen_as] } +
+         extras.map { |item, used_for| [item, used_for, nil, false] }
 
   stashed = load_yaml(STASHED, [])
-  closed_spots = {}
-  placed = Hash.new { |hash, spot| hash[spot] = [] }
+  put = []
   left_over = []
+  missed = []
+  failed = []
+  full = false
 
-  jobs = gear.map { |item, used_for| [item, used_for, container, true] } +
-         extras.map { |item, used_for| [item, used_for, nil, false] }
-  jobs.each do |item, used_for, take_from, just_one|
-    if (STASH_SPOTS - closed_spots.keys).empty?
-      left_over << item if DRCI.exists?(item, take_from)
-      next
-    end
+  begin
+    exit unless open_vault(settings)
 
-    while (line = take_out(item, take_from))
-      from = line[GET_SOURCE, 1] || take_from
-      spot, name = put_in_spot(item, closed_spots)
-      unless spot
-        left_over << item
-        put_back(item, from, container)
-        break
+    jobs.each do |item, used_for, take_from, just_one, seen_as|
+      if full
+        left_over << item if DRCI.exists?(item, take_from)
+        next
       end
 
-      placed[spot] << item
-      # A copy each time: two codices sharing one array would be written as a
-      # YAML alias, which safe_load refuses to read back
-      stashed << { 'item' => item, 'name' => name, 'spot' => spot, 'from' => from, 'for' => used_for.dup }
-      save_yaml(STASHED, stashed)
-      break if just_one
+      got_any = false
+      while (line = take_out(item, take_from))
+        got_any = true
+        from = line[GET_SOURCE, 1] || take_from
+        name = line[GET_NAME, 1]
+        case put_in_vault(item)
+        when :put
+          put << item
+          # A copy of used_for each time: two codices sharing one array would
+          # be written as a YAML alias, which safe_load refuses to read back
+          stashed << { 'item' => vault_address(item, name), 'name' => name, 'from' => from, 'for' => used_for.dup }
+          save_yaml(STASHED, stashed)
+          break if just_one
+        when :full
+          full = true
+          left_over << item
+          put_back(item, from, container)
+          break
+        else
+          failed << (name || item)
+          put_back(item, from, container)
+          break
+        end
+      end
+      missed << "#{seen_as} (#{take_from})" if seen_as && !got_any
     end
+  ensure
+    leave_vault
   end
 
-  placed.each { |spot, items| DRC.message("stash: #{spot}: #{items.join(', ')}") }
-  DRC.message('stash: nothing to stash.') if placed.empty? && left_over.empty?
-  DRC.message("stash: stopped using: #{closed_spots.map { |spot, why| "#{spot} (#{why})" }.join(', ')}") unless closed_spots.empty?
-  DRC.message("stash: no room, kept: #{left_over.uniq.join(', ')}") unless left_over.empty?
+  DRC.message("stash: put in your vault: #{put.join(', ')}") unless put.empty?
+  DRC.message('stash: nothing to stash.') if put.empty? && left_over.empty? && missed.empty? && failed.empty?
+  DRC.message("stash: the vault is full, kept: #{left_over.uniq.join(', ')}") unless left_over.empty?
+  DRC.message("stash: the vault wouldn't take these, kept them: #{failed.join(', ')}") unless failed.empty?
+  DRC.message("stash: saw these but GET couldn't pick them up: #{missed.join(', ')}") unless missed.empty?
 end
 
 def add_extra(item)
@@ -283,7 +418,9 @@ end
 
 def show_list(gear)
   DISCIPLINES.each do |discipline|
-    DRC.message("stash: #{discipline} gear (;stash #{discipline}): #{gear_for([discipline], gear).keys.join(', ')}")
+    tools = gear_for([discipline], gear).keys
+    DRC.message("stash: #{discipline} (;stash #{discipline}): #{tools.empty? ? 'no gear' : tools.join(', ')}, " \
+                "plus any #{MATERIALS[discipline].keys.join(', ')}")
   end
   extras = load_extras
   DRC.message("stash: extras (;stash extras): #{extras.empty? ? 'none' : extras.join(', ')}")
@@ -294,14 +431,11 @@ def show_list(gear)
     return
   end
 
-  stashed.group_by { |entry| entry['spot'] }.each do |spot, entries|
-    names = entries.map do |entry|
-      used_for = entry['for'] ? " (#{entry['for'].join('/')})" : ''
-      "#{entry['name'] || entry['item']}#{used_for}"
-    end
-    DRC.message("stash: stashed #{spot}: #{names.join(', ')}")
+  stashed.group_by { |entry| entry['for'].to_a.join('/') }.each do |used_for, entries|
+    names = entries.map { |entry| entry['name'] || entry['item'] }
+    DRC.message("stash: in your vault#{" for #{used_for}" unless used_for.empty?}: #{names.join(', ')}")
   end
-  DRC.message('stash: ;unstash gets it all back, or ;unstash forging, shaping, enchanting, crafting or extras gets just that.')
+  DRC.message('stash: ;unstash gets it all back, or ;unstash forging, shaping, enchanting, outfitting, crafting or extras gets just that.')
 end
 
 settings = get_settings
@@ -311,13 +445,13 @@ gear = crafting_gear(settings)
 
 case command
 when 'crafting'
-  stash_items(gear, {}, settings.crafting_container)
+  stash_items(gear, {}, settings, DISCIPLINES)
 when *DISCIPLINES
-  stash_items(gear_for([command], gear), {}, settings.crafting_container)
+  stash_items(gear_for([command], gear), {}, settings, [command])
 when 'extras'
-  stash_items({}, extras_for(gear), settings.crafting_container)
+  stash_items({}, extras_for(gear), settings)
 when 'all'
-  stash_items(gear, extras_for(gear), settings.crafting_container)
+  stash_items(gear, extras_for(gear), settings, DISCIPLINES)
 when 'add'
   add_extra(item)
 when 'remove'
@@ -325,5 +459,5 @@ when 'remove'
 when 'list'
   show_list(gear)
 else
-  DRC.message('stash: use ;stash crafting, forging, shaping, enchanting, extras, all, add <item>, remove <item>, or list.')
+  DRC.message('stash: use ;stash crafting, forging, shaping, enchanting, outfitting, extras, all, add <item>, remove <item>, or list.')
 end

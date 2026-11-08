@@ -1,46 +1,52 @@
 =begin
   unstash.lic
 
-  The opposite of ;stash. Goes home (;go2 14665, MOVE ARCH, unless you're
-  already inside), gets back everything ;stash wrote down, and puts each thing
-  back in the container it came from (or your crafting_container if that
-  doesn't work). You're left inside the house when it's done (MOVE DOOR to
-  leave).
+  The opposite of ;stash. Opens your vault at your hometown's Carousel
+  (Crossing: ;go2 8285, through an arch, PULL LEVER, GO DOOR, OPEN VAULT),
+  gets back what ;stash wrote down, and puts each thing back in the container
+  it came from (or your crafting_container if that doesn't work). Then it
+  closes the vault and leaves you in the Carousel.
 
-  Only things ;stash wrote down come back, so whatever else you keep at home
-  (the metal clamps under the bed, the muracite tongs with icesteel clamps on
-  the wall) stays where it is. Each item's full name is checked when you
-  pick it up. If it's the wrong one, it goes back and stays on the list.
+  Only things ;stash wrote down come back, so whatever else you keep in the
+  vault stays there. Each item's full name is checked when you pick it up. If
+  it's the wrong one, it goes back and stays on the list.
 
-  Items come back newest first, which is the order GET finds them in.
   Anything that isn't there anymore is dropped from the list. If there's no
-  room to put something away, the rest stays stashed and on the list for
+  room to put something away, the rest stays in the vault and on the list for
   next time.
 
   ;stash writes down what each thing is for, so you can get back part of it:
 
   Usage:
     ;unstash               # everything
-    ;unstash crafting      # forging, shaping and enchanting gear
-    ;unstash forging       # just forging gear
-    ;unstash shaping       # just shaping gear
-    ;unstash enchanting    # just enchanting gear
+    ;unstash crafting      # all crafting gear and materials
+    ;unstash forging       # just forging gear and materials
+    ;unstash shaping       # just shaping gear and materials
+    ;unstash enchanting    # just enchanting gear and materials
+    ;unstash outfitting    # just outfitting gear and materials
     ;unstash extras        # just your extras
 =end
 
-HOME_ROOM = 14_665
-HOME_TITLE = /Visenyia's Home/
-
-# What's stashed right now and where, written by ;stash
+# What's stashed right now, written by ;stash
 STASH_LIST = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
 
 # What ;stash says each thing is for
-CRAFTING = %w[forging shaping enchanting].freeze
+CRAFTING = %w[forging shaping enchanting outfitting].freeze
 GROUPS = (CRAFTING + ['extras']).freeze
+
+# Getting in and out of the vault: the same steps and messages as ;stash
+ARCHES = ['go blackwood arch', 'go ironwood arch', 'go rosewood arch', 'go platinum arch'].freeze
+ARCH_IN = /escorts you through/
+RENT_DUE = /\brent\b/i
+ARCH_BUSY = /restricted|blocks|someone|using|Sorry/
+LEVER_PULLED = /door pops open/
+VAULT_OPENED = [/^The vault opens/, /already open/i].freeze
+CHAMBER = /Chamber/
 
 # bput returns only the matched text, so match the whole line to check the item name
 GET_SUCCESS = [/^You get .*/, /^You pick up .*/].freeze
 GET_MISSING = [/^What were you referring to/, /^I could not find/].freeze
+NOT_FOUND = [/^What were you referring to/, /^I could not find/, /^I don't know what you are referring to/].freeze
 
 def load_stash_list
   File.exist?(STASH_LIST) ? YAML.safe_load(File.read(STASH_LIST)) || [] : []
@@ -51,41 +57,11 @@ def save_stash_list(entries)
   File.write(STASH_LIST, entries.to_yaml)
 end
 
-# room_title (from the window subtitle) missed the house once when already
-# inside; room_name is the "[Visenyia's Home]" line itself, so check both
-def home?
-  [XMLData.room_title, XMLData.room_name].any? { |title| title.to_s =~ HOME_TITLE }
-end
-
-def go_home
-  return true if home?
-  return false unless DRCT.walk_to(HOME_ROOM)
-
-  DRC.bput('move arch', /^You walk in/, /^What were you referring to/, /^You can't/, /^You don't/)
-  10.times do
-    return true if home?
-
-    pause 0.5
-  end
-  false
-end
-
-# How to GET from a spot the stash scripts used: "on wall" and "on bookcase"
-# as is, "in wall" as "from wall", "under bed" as "from under bed"
-def get_from(spot)
-  preposition, place = spot.split(' ', 2)
-  case preposition
-  when 'on' then spot
-  when 'in' then "from #{place}"
-  else "from #{spot}"
-  end
-end
-
 def hands_empty?
   DRC.right_hand.nil? && DRC.left_hand.nil?
 end
 
-# The hand display can lag the game text by a moment
+# The hand display and room title can lag the game text by a moment
 def settle
   10.times do
     return true if yield
@@ -93,6 +69,77 @@ def settle
     pause 0.1
   end
   false
+end
+
+def in_chamber?
+  [XMLData.room_title, XMLData.room_name].any? { |title| title.to_s =~ CHAMBER }
+end
+
+# Walks to the hometown's Carousel and opens your vault. Remembers how far it
+# got in @vault_steps so leave_vault can undo it. Says why and returns false
+# if it can't.
+def open_vault(settings)
+  @vault_steps = []
+  room = get_data('town')[settings.hometown]&.dig('vault', 'id')
+  unless room
+    DRC.message("unstash: no vault listed for your hometown, #{settings.hometown}.")
+    return false
+  end
+  unless DRCT.walk_to(room)
+    DRC.message("unstash: couldn't walk to the Carousel (room #{room}).")
+    return false
+  end
+  return false unless enter_booth
+
+  unless DRC.bput('pull lever', LEVER_PULLED, *NOT_FOUND, /^You can't/) =~ LEVER_PULLED
+    DRC.message("unstash: pulling the lever didn't open the door.")
+    return false
+  end
+
+  DRC.bput('go door', /.+/)
+  unless settle { in_chamber? }
+    DRC.message("unstash: GO DOOR didn't reach the Carousel Chamber. Room: #{XMLData.room_title.inspect}")
+    return false
+  end
+  @vault_steps << :chamber
+
+  result = DRC.bput('open vault', *VAULT_OPENED, RENT_DUE, *NOT_FOUND, /^You can't/)
+  unless VAULT_OPENED.any? { |pattern| result =~ pattern }
+    DRC.message("unstash: the vault didn't open: #{result.empty? ? 'no reply' : result}")
+    return false
+  end
+  @vault_steps << :open
+  true
+end
+
+# Tries each arch, waiting a while if every booth is in use
+def enter_booth
+  6.times do
+    ARCHES.each do |arch|
+      result = DRC.bput(arch, ARCH_IN, RENT_DUE, ARCH_BUSY, *NOT_FOUND)
+      if result =~ ARCH_IN
+        @vault_steps << :booth
+        return true
+      end
+      if result =~ RENT_DUE
+        DRC.message('unstash: vault rent is due. Pay it at the Carousel desk (GO DESK), then try again.')
+        return false
+      end
+    end
+    DRC.message('unstash: every Carousel booth is busy. Waiting 10 seconds.')
+    pause 10
+  end
+  DRC.message('unstash: gave up waiting for a Carousel booth.')
+  false
+end
+
+# Closes the vault and goes back out to the Carousel, as far as open_vault got
+def leave_vault
+  steps = @vault_steps.to_a
+  DRC.bput('close vault', /^You close the vault/, /already closed/i, /isn't open/i, *NOT_FOUND) if steps.include?(:open)
+  DRC.bput('go door', /.+/) if steps.include?(:chamber)
+  DRC.bput('go arch', /door slams closed/, /.+/) if steps.include?(:booth)
+  @vault_steps = []
 end
 
 # The GET line names this exact item, e.g. "You get some muracite tongs from
@@ -103,29 +150,29 @@ def right_item?(result, name)
   result =~ /^You (?:get|pick up) (?:a|an|some|the|your) #{Regexp.escape(name)} (?:from|off)\b/
 end
 
-def put_back(item, spot)
-  DRC.bput("put my #{item} #{spot}", /^You put/, /^What were you referring to/, /no room/i, /^You can't/)
+def put_back(item)
+  DRC.bput("put my #{item} in vault", /^You put/, *NOT_FOUND, /no room/i, /^You can't/)
   return true if settle { hands_empty? }
 
-  DRC.message("unstash: couldn't put #{item} back #{spot}. It's still in your hand.")
+  DRC.message("unstash: couldn't put #{item} back in the vault. It's still in your hand.")
   exit
 end
 
 # Returns :got, :missing, :wrong, :failed, or :container_full
 def fetch(entry, container)
-  item, name, spot = entry.values_at('item', 'name', 'spot')
-  result = DRC.bput("get #{item} #{get_from(spot)}", *GET_SUCCESS, *GET_MISSING, *DRCI::GET_ITEM_FAILURE_PATTERNS)
+  item, name = entry.values_at('item', 'name')
+  result = DRC.bput("get #{item} from vault", *GET_SUCCESS, *GET_MISSING, *DRCI::GET_ITEM_FAILURE_PATTERNS)
   return :missing if GET_MISSING.any? { |pattern| result =~ pattern }
   return :failed unless settle { !hands_empty? }
 
   unless right_item?(result, name)
-    put_back(item, spot)
+    put_back(item)
     return :wrong
   end
 
   return :got if DRCI.put_away_item?(item, [entry['from'], container].compact.uniq)
 
-  put_back(item, spot)
+  put_back(item)
   :container_full
 end
 
@@ -141,7 +188,7 @@ groups = case asked_for
          when 'crafting' then CRAFTING
          when *GROUPS then [asked_for]
          else
-           DRC.message('unstash: use ;unstash for everything, or ;unstash forging, shaping, enchanting, crafting or extras.')
+           DRC.message('unstash: use ;unstash for everything, or ;unstash forging, shaping, enchanting, outfitting, crafting or extras.')
            exit
          end
 
@@ -161,30 +208,32 @@ unless hands_empty?
   exit
 end
 
-unless go_home
-  DRC.message("unstash: couldn't get into the house from room #{HOME_ROOM}. " \
-              "Room title: #{XMLData.room_title.inspect}, room name: #{XMLData.room_name.inspect}")
-  exit
-end
-
-container = get_settings.crafting_container
+settings = get_settings
+container = settings.crafting_container
 results = Hash.new { |hash, result| hash[result] = [] }
 
-(stash_list.size - 1).downto(0) do |index|
-  entry = stash_list[index]
-  next unless wanted?(entry, groups)
+begin
+  exit unless open_vault(settings)
 
-  result = fetch(entry, container)
-  results[result] << "#{entry['name'] || entry['item']} (#{entry['spot']})"
-  break if result == :container_full
-  next unless %i[got missing].include?(result)
+  # Newest first
+  (stash_list.size - 1).downto(0) do |index|
+    entry = stash_list[index]
+    next unless wanted?(entry, groups)
 
-  stash_list.delete_at(index)
-  save_stash_list(stash_list)
+    result = fetch(entry, container)
+    results[result] << (entry['name'] || entry['item'])
+    break if result == :container_full
+    next unless %i[got missing].include?(result)
+
+    stash_list.delete_at(index)
+    save_stash_list(stash_list)
+  end
+ensure
+  leave_vault
 end
 
 DRC.message("unstash: got back: #{results[:got].join(', ')}") unless results[:got].empty?
-DRC.message("unstash: not there anymore, dropped from the list: #{results[:missing].join(', ')}") unless results[:missing].empty?
+DRC.message("unstash: not in the vault anymore, dropped from the list: #{results[:missing].join(', ')}") unless results[:missing].empty?
 DRC.message("unstash: found something else first, left it and kept on the list: #{results[:wrong].join(', ')}") unless results[:wrong].empty?
 DRC.message("unstash: couldn't pick up, kept on the list: #{results[:failed].join(', ')}") unless results[:failed].empty?
-DRC.message("unstash: no room to put #{results[:container_full].first} away. #{stash_list.count { |entry| wanted?(entry, groups) }} item(s) still stashed and on the list.") unless results[:container_full].empty?
+DRC.message("unstash: no room to put #{results[:container_full].first} away. #{stash_list.count { |entry| wanted?(entry, groups) }} item(s) still in the vault and on the list.") unless results[:container_full].empty?
