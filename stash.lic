@@ -76,9 +76,12 @@ SUPPLIES = {
     'enchanting logbook',
     'fount' # fragile rough mana fount
   ],
-  'outfitting' => [],
-  # Neither carried yet (11/8/2026); skipped until they are. remedy.lic gets
-  # the book as "remed book".
+  # Bought 11/9/2026
+  'outfitting' => [
+    'tailoring book', # book of apprentice tailoring instructions
+    'outfitting logbook'
+  ],
+  # Bought 11/9/2026. remedy.lic gets the book as "remed book".
   'alchemy' => [
     'remed.book', # book of apprentice remedies instructions
     'alchemy logbook'
