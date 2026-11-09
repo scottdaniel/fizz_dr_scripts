@@ -30,7 +30,8 @@
   and storage_containers that MATERIALS below says a discipline uses: ingots,
   bars and ore for forging, lumber, deeds, bone stacks and stone for shaping,
   beads for enchanting, leather, cloth and dyes for outfitting, and so on.
-  Every one gets stashed, from whichever container it's in.
+  Every one gets stashed, from whichever container it's in. A weapon harness
+  isn't looked in: only weapons are tied to it.
 
   Weapons are the ones named in your yaml's weapon_training. Each comes out
   of wherever your yaml's gear list says it's kept, the way combat-trainer
@@ -127,6 +128,9 @@ MATERIALS = {
   # Herbs stay in your remedy_container
   'alchemy'    => {}
 }.freeze
+
+# storage_containers that can't hold materials, so aren't looked in
+NOT_LOOKED_IN = /\bharness\b/i
 
 # Getting in and out of the vault, as Fizzlestiks did it at the Crossing
 # Carousel on 2026-11-07 and 11-08. Plain GO ARCH is the platinum arch, which
@@ -301,6 +305,10 @@ def find_materials(disciplines, settings)
   return [] if disciplines.empty?
 
   containers = ([settings.crafting_container] + settings.storage_containers.to_a).compact.uniq
+  # A harness answers LOOK IN with "You have ... secured to your harness.",
+  # which DRCI doesn't know, so it waited 15 seconds for nothing on every
+  # stash (2026-11-09). Only weapons go on one.
+  containers.reject! { |container| container =~ NOT_LOOKED_IN }
   containers.flat_map do |container|
     DRCI.get_item_list(container, 'look').to_a.filter_map do |name|
       used_for = material_uses(name)
