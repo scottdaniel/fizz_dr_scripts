@@ -1,0 +1,78 @@
+=begin
+  drop-junk.lic
+
+  Walks to room 8246 (or the room you give) and gets rid of the crafting
+  leftovers that can't be used, from your crafting_container:
+
+    - unfinished thrusting blades (forging work orders that stopped on a
+      missing hilt, 2026-11-09)
+    - botched and marred reinforced netting (Zasele turned them down) and
+      the netting instructions
+
+  Each one goes in a bin if the room has one, else on the ground
+  (DRCI.dispose_trash), and DUMP JUNK calls the janitor at the end. Every
+  item's full name is checked before it goes: a finished thrusting blade, or
+  netting that isn't botched or marred, is put back and that kind stops.
+
+  Usage:
+    ;drop-junk          # at room 8246
+    ;drop-junk 1234     # at room 1234
+=end
+
+ROOM = 8246
+
+# What to GET, and what the GET line has to say for it to be junk
+JUNK = [
+  ['thrusting blade', /\bunfinished\b/],
+  ['netting', /\b(?:botched|marred)\b/],
+  ['netting instructions', /netting instructions/]
+].freeze
+# The most of one kind it takes, so a GET that keeps answering can't loop
+MAX_EACH = 30
+
+GET_SUCCESS = /^You get .*/
+NOT_FOUND = [/^What were you referring to/, /^I could not find/].freeze
+
+def hands_empty?
+  DRC.right_hand.nil? && DRC.left_hand.nil?
+end
+
+unless hands_empty?
+  DRC.message('drop-junk: empty your hands first.')
+  exit
+end
+
+settings = get_settings
+bag = settings.crafting_container
+room = (Script.current.vars[1] || ROOM).to_i
+unless DRCT.walk_to(room)
+  DRC.message("drop-junk: couldn't walk to room #{room}.")
+  exit
+end
+
+dropped = Hash.new(0)
+kept = []
+
+JUNK.each do |noun, junk|
+  MAX_EACH.times do
+    line = DRC.bput("get my #{noun} from my #{bag}", GET_SUCCESS, *NOT_FOUND)
+    break unless line =~ GET_SUCCESS
+
+    unless line =~ junk
+      kept << line.sub(/^You get (?:a|an|some) /, '').sub(/ from .*/, '')
+      DRCI.put_away_item?(noun, bag)
+      break
+    end
+    break unless DRCI.dispose_trash(noun)
+
+    dropped[noun] += 1
+  end
+end
+
+fput('dump junk') unless dropped.empty?
+if dropped.empty?
+  DRC.message("drop-junk: nothing to drop in your #{bag}.")
+else
+  DRC.message("drop-junk: got rid of #{dropped.map { |noun, count| "#{noun} (#{count})" }.join(', ')}.")
+end
+DRC.message("drop-junk: kept these, they aren't junk: #{kept.join(', ')}") unless kept.empty?
