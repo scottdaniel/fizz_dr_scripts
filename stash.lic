@@ -106,17 +106,18 @@ MATERIALS = {
   'alchemy'    => {}
 }.freeze
 
-# Getting in and out of the vault, as Fizzlestiks did it by hand at the
-# Crossing Carousel on 2026-11-07. Plain GO ARCH is the platinum arch, which
-# the attendant blocks ("Sorry, but access to that arch is restricted."); the
-# blackwood arch worked. The ironwood and rosewood arches are for Premium and
-# Platinum accounts, so only the blackwood one is used. The busy-booth replies
-# come from Tirost's Genie vault.cmd.
-ARCH = 'go blackwood arch'
+# Getting in and out of the vault, as Fizzlestiks did it at the Crossing
+# Carousel on 2026-11-07 and 11-08. Plain GO ARCH is the platinum arch, which
+# the attendant blocks ("Sorry, but access to that arch is restricted."), so
+# it isn't tried. The blackwood, ironwood and rosewood arches all work
+# ("The Dwarven attendant escorts you through the ironwood arch."). A busy
+# booth: 'The attendant steps in front of the blackwood arch.  "Sban is using
+# that booth," he says.'
+ARCHES = ['go blackwood arch', 'go ironwood arch', 'go rosewood arch'].freeze
 ARCH_IN = /escorts you through/
 RENT_DUE = /\brent\b/i
 ARCH_RESTRICTED = /access to that arch is restricted/
-ARCH_BUSY = /blocks|someone|using|Sorry/
+ARCH_BUSY = /is using that booth|blocks|someone|using|Sorry/
 LEVER_PULLED = /door pops open/
 VAULT_OPENED = [/^The vault opens/, /already open/i].freeze
 CHAMBER = /Chamber/
@@ -205,26 +206,29 @@ def open_vault(settings)
   true
 end
 
-# Through the blackwood arch, waiting a while if its booth is in use
+# Through the first arch whose booth is free, waiting a while if all are in use
 def enter_booth
   6.times do
-    result = DRC.bput(ARCH, ARCH_IN, RENT_DUE, ARCH_RESTRICTED, ARCH_BUSY, *NOT_FOUND)
-    if result =~ ARCH_IN
-      @vault_steps << :booth
-      return true
+    ARCHES.each do |arch|
+      result = DRC.bput(arch, ARCH_IN, RENT_DUE, ARCH_RESTRICTED, ARCH_BUSY, *NOT_FOUND)
+      if result =~ ARCH_IN
+        @vault_steps << :booth
+        return true
+      end
+      if result =~ RENT_DUE
+        DRC.message('stash: vault rent is due. Pay it at the Carousel desk (GO DESK), then try again.')
+        return false
+      end
+      # Not in the Carousel any more (say, someone went through an arch by hand)
+      if NOT_FOUND.any? { |pattern| result =~ pattern }
+        DRC.message("stash: there's no #{arch.split[1]} arch here, so stopping.")
+        return false
+      end
     end
-    if result =~ RENT_DUE
-      DRC.message('stash: vault rent is due. Pay it at the Carousel desk (GO DESK), then try again.')
-      return false
-    end
-    if result =~ ARCH_RESTRICTED || NOT_FOUND.any? { |pattern| result =~ pattern }
-      DRC.message("stash: couldn't go through the blackwood arch: #{result}")
-      return false
-    end
-    DRC.message('stash: the blackwood booth is busy. Waiting 10 seconds.')
+    DRC.message('stash: every booth is busy. Waiting 10 seconds.')
     pause 10
   end
-  DRC.message('stash: gave up waiting for the blackwood booth.')
+  DRC.message('stash: gave up waiting for a free booth.')
   false
 end
 

@@ -5,7 +5,7 @@ This is the `scripts/custom` folder of a Lich5 DragonRealms install, for Fizzles
 
 ## Stashing in the vault
 
-Both scripts use your vault at your hometown's Carousel (Crossing is `;go2 8285`). They walk there, `GO BLACKWOOD ARCH` (the only arch Fizzlestiks can use; they wait if its booth is busy), `PULL LEVER`, `GO DOOR` and `OPEN VAULT`. When they're done, or if anything goes wrong on the way, they close the vault and leave you in the Carousel. If rent is due they stop at the arch: pay at the Carousel desk (`GO DESK`, 5,000 Kronars for 30 days).
+Both scripts use your vault at your hometown's Carousel (Crossing is `;go2 8285`). They walk there, go through the first free booth (blackwood, ironwood, then rosewood; the platinum arch is restricted for Fizzlestiks, and if all three booths are busy they wait), `PULL LEVER`, `GO DOOR` and `OPEN VAULT`. When they're done, or if anything goes wrong on the way, they close the vault and leave you in the Carousel. If rent is due they stop at the arch: pay at the Carousel desk (`GO DESK`, 5,000 Kronars for 30 days).
 
 | Script | What it does |
 |---|---|
