@@ -1,41 +1,90 @@
 =begin
   drop-junk.lic
 
-  Walks to room 8246 (or the room you give) and gets rid of the crafting
-  leftovers that can't be used, from your crafting_container:
+  Walks to room 8246 (or the room you give) and gets rid of junk from your
+  containers. Each piece goes in a bin if the room has one, else on the
+  ground (DRCI.dispose_trash), and DUMP JUNK calls the janitor at the end.
 
+  With no items named, it takes the crafting leftovers that can't be used,
+  from your crafting_container:
     - unfinished thrusting blades (forging work orders that stopped on a
       missing hilt, 2026-11-09)
     - botched and marred reinforced netting (Zasele turned them down) and
       the netting instructions
-
-  Each one goes in a bin if the room has one, else on the ground
-  (DRCI.dispose_trash), and DUMP JUNK calls the janitor at the end. Every
-  item's full name is checked before it goes: a finished thrusting blade, or
+  Each one's full name is checked first: a finished thrusting blade, or
   netting that isn't botched or marred, is put back and that kind stops.
 
+  Name items and it takes every one of each from your crafting_container and
+  storage_containers, whatever its full name. One word per item, the noun;
+  for two words join them with a dot, the way GET takes them
+  ("thrusting.blade", "steel.kasai").
+
+  --safe drops everything on the ground, even where there's a bin, and
+  doesn't DUMP JUNK: LOOK to check what's there, pick up anything that should
+  stay, then DUMP JUNK yourself.
+
   Usage:
-    ;drop-junk          # at room 8246
-    ;drop-junk 1234     # at room 1234
+    ;drop-junk                        # the crafting leftovers, at 8246
+    ;drop-junk kasai                  # every kasai in your containers
+    ;drop-junk kasai pasaba telek     # several kinds
+    ;drop-junk --safe kasai           # drop them, but you DUMP JUNK after checking
+    ;drop-junk 1234 kasai             # at room 1234 instead
 =end
 
 ROOM = 8246
 
-# What to GET, and what the GET line has to say for it to be junk
-JUNK = [
+# The crafting leftovers, and what the GET line has to say for each to be junk
+LEFTOVERS = [
   ['thrusting blade', /\bunfinished\b/],
   ['netting', /\b(?:botched|marred)\b/],
   ['netting instructions', /netting instructions/]
 ].freeze
-# The most of one kind it takes, so a GET that keeps answering can't loop
-MAX_EACH = 30
+# The most of one kind from one container, so a GET that keeps answering
+# can't loop
+MAX_EACH = 50
 
 GET_SUCCESS = /^You get .*/
-NOT_FOUND = [/^What were you referring to/, /^I could not find/].freeze
+DROP_SUCCESS = /^You drop .*/
+NOT_FOUND = [/^What were you referring to/, /^I could not find/, /^I don't know what you are referring to/].freeze
 
 def hands_empty?
   DRC.right_hand.nil? && DRC.left_hand.nil?
 end
+
+# The hand display can lag the game text by a moment
+def settle
+  10.times do
+    return true if yield
+
+    pause 0.1
+  end
+  false
+end
+
+# "an unfinished steel kasai" from "You get an unfinished steel kasai from inside your grey rucksack."
+def name_in(line)
+  line.sub(/^You get (?:a|an|some|the) /, '').sub(/ from .*/, '')
+end
+
+# Gets rid of the piece in hand: dropped on the ground with --safe, else
+# into a bin or on the ground (DRCI.dispose_trash). Stops the script if it's
+# still in hand, rather than getting the next one.
+def get_rid_of(noun, safe)
+  gone = if safe
+           DRC.bput("drop my #{noun}", DROP_SUCCESS, *NOT_FOUND) =~ DROP_SUCCESS && settle { hands_empty? }
+         else
+           DRCI.dispose_trash(noun)
+         end
+  return if gone
+
+  DRC.message("drop-junk: couldn't get rid of the #{noun} in your hand, so stopping.")
+  exit
+end
+
+args = Script.current.vars[1..].to_a.compact
+safe = !args.delete('--safe').nil?
+room = (args.find { |arg| arg =~ /\A\d+\z/ } || ROOM).to_i
+named = args.reject { |arg| arg =~ /\A\d+\z/ }.map(&:downcase)
 
 unless hands_empty?
   DRC.message('drop-junk: empty your hands first.')
@@ -44,35 +93,49 @@ end
 
 settings = get_settings
 bag = settings.crafting_container
-room = (Script.current.vars[1] || ROOM).to_i
+# What to look for, as [what to GET, the containers to look in, what the GET
+# line must say for it to be junk]
+jobs = if named.empty?
+         LEFTOVERS.map { |noun, junk| [noun, [bag], junk] }
+       else
+         containers = ([bag] + settings.storage_containers.to_a).compact.uniq
+         named.map { |noun| [noun, containers, //] }
+       end
+
 unless DRCT.walk_to(room)
   DRC.message("drop-junk: couldn't walk to room #{room}.")
   exit
 end
 
-dropped = Hash.new(0)
+gone = []
 kept = []
 
-JUNK.each do |noun, junk|
-  MAX_EACH.times do
-    line = DRC.bput("get my #{noun} from my #{bag}", GET_SUCCESS, *NOT_FOUND)
-    break unless line =~ GET_SUCCESS
+jobs.each do |noun, containers, junk|
+  containers.each do |container|
+    MAX_EACH.times do
+      line = DRC.bput("get my #{noun} from my #{container}", GET_SUCCESS, *NOT_FOUND)
+      break unless line =~ GET_SUCCESS && settle { !hands_empty? }
 
-    unless line =~ junk
-      kept << line.sub(/^You get (?:a|an|some) /, '').sub(/ from .*/, '')
-      DRCI.put_away_item?(noun, bag)
-      break
+      unless line =~ junk
+        kept << name_in(line)
+        DRCI.put_away_item?(noun, container)
+        break
+      end
+      get_rid_of(noun, safe)
+      gone << "#{name_in(line)} (#{container})"
     end
-    break unless DRCI.dispose_trash(noun)
-
-    dropped[noun] += 1
   end
 end
 
-fput('dump junk') unless dropped.empty?
-if dropped.empty?
-  DRC.message("drop-junk: nothing to drop in your #{bag}.")
+# "unfinished steel kasai (rucksack) x2" rather than the same name twice
+gone = gone.tally.map { |name, count| count > 1 ? "#{name} x#{count}" : name }
+if gone.empty?
+  DRC.message("drop-junk: found none of #{jobs.map(&:first).join(', ')} to get rid of.")
+elsif safe
+  DRC.message("drop-junk: dropped on the ground: #{gone.join(', ')}")
+  DRC.message('drop-junk: LOOK to check them and pick up anything that should stay, then DUMP JUNK for the janitor.')
 else
-  DRC.message("drop-junk: got rid of #{dropped.map { |noun, count| "#{noun} (#{count})" }.join(', ')}.")
+  fput('dump junk')
+  DRC.message("drop-junk: got rid of: #{gone.join(', ')}")
 end
 DRC.message("drop-junk: kept these, they aren't junk: #{kept.join(', ')}") unless kept.empty?
