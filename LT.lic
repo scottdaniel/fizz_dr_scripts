@@ -38,11 +38,11 @@
     - Each stand sells only 10, so name the one you want most first. In
       2026 all three stands were empty about 20 seconds after the curtain
       came down.
-    - At the 11-08 sale the game couldn't find any "stand" (LOOK ON STAND said
-      "I could not find what you were referring to" while others were
-      buying). Now if a stand can't be found, LT tries LOOK ON DISPLAY, and
-      if that fails too, ;LT third buys what the clerk is handing other
-      people ("The sales clerk hands Teko a ... safos ..." => BUY SAFOS).
+    - Since the 11-08 sale the stands are displays: LOOK ON STAND says "I
+      could not find what you were referring to". LT looks on the display
+      first and falls back to the stand. If it can't find either, ;LT third
+      buys what the clerk is handing other people ("The sales clerk hands
+      Teko a ... safos ..." => BUY SAFOS).
     - Each family can buy 5 from a stand. Bring plenty: the 2026 kimono was
       3,750,000 Kronars (375 platinum).
 =end
@@ -95,9 +95,9 @@ module LimitedTreasures
   # "On the silversteel stand you see a ... and a ...", or a shop list:
   # "On the silversteel stand, you see:" followed by indented "  a ... for 10 platinum Kronars" lines
   STAND_CONTENTS = /^#{PROMPT}On (?:the|a|an) [^,:]*?,? you see:?\s*(.*)$/
-  # What the stands might be called, tried in this order. On 11-08 there was no
-  # "stand"; Gortik had "placed three new things on display".
-  STAND_NOUNS    = %w[stand display].freeze
+  # What the stands are called, tried in this order. Since 11-08 they're
+  # displays (Lycette checked); the first sales on 11-06 used stands.
+  STAND_NOUNS    = %w[display stand].freeze
   # "There is nothing on there."
   STAND_EMPTY    = /^#{PROMPT}(?:There(?: is|'s)|You see|You don't see) nothing\b/i
   STAND_MISSING  = /^#{PROMPT}(?:What were you referring to|I could not find)\b/
@@ -327,7 +327,7 @@ module LimitedTreasures
   end
 
   # What's on a stand: [items, nil] (no items if it's empty) or [nil, why not].
-  # Tries each of STAND_NOUNS ("third stand", then "third display") and
+  # Tries each of STAND_NOUNS ("third display", then "third stand") and
   # remembers the one that worked.
   def stand_items(stand)
     ordinal = stand.sub(/\s*stand\z/, '')
