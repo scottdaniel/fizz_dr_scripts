@@ -2,7 +2,7 @@
   sell-gems.lic
 
   Walks to the nearest gem shop, sells every loose gem (and gem-like material
-  such as coral and nuggets) from your rucksack and scavenger's belt, then
+  such as coral and nuggets) from your rucksack, scavenger's belt, tote and thigh bag, then
   walks back to where you started.
 
   Gems are found by LOOKing in each container and matching item nouns against
@@ -10,13 +10,13 @@
   category and the EXTRA_NOUNS below.
 
   Usage:
-    ;sell-gems                        # rucksack and scav belt
+    ;sell-gems                        # rucksack, scav belt, tote, thigh bag
     ;sell-gems backpack "gem pouch"   # any containers you name instead
 =end
 
 no_kill_all
 
-DEFAULT_CONTAINERS = ['rucksack', 'scav belt'].freeze
+DEFAULT_CONTAINERS = ['rucksack', 'scav belt', 'tote', 'thigh bag'].freeze
 
 # Sellable at a gem shop but not in gem_nouns
 EXTRA_NOUNS = %w[nugget].freeze
