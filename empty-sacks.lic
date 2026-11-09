@@ -1,0 +1,65 @@
+=begin
+  empty-sacks.lic
+
+  Empties the random-material sacks you keep in your tote. For each sack it
+  takes it out, opens it (that's when it fills up), moves everything into your
+  tote with ;transfer-items, and drops the empty sack for the janitor to throw
+  out. Once the tote is full, the rest goes in your rucksack.
+
+  If neither has room, it stops with the sack still in your hand, so nothing
+  gets dropped with it.
+
+  Start with empty hands: one holds the sack, the other moves the items.
+
+  Usage:
+    ;empty-sacks
+=end
+
+SACK = 'sack'
+SACK_CONTAINER = 'tote'
+# Where the items go, in order. The next one takes over when one fills up.
+DESTINATIONS = %w[tote rucksack].freeze
+
+def stop(message)
+  DRC.message("*** #{message} ***")
+  DRC.beep
+  exit
+end
+
+def sack_empty?
+  contents = DRCI.get_item_list(SACK, 'look')
+  stop("Couldn't look in the #{SACK}. Stopping.") unless contents
+  contents.empty?
+end
+
+# Moves everything into destinations.first, and on into the next one when it
+# fills up. Full containers come off the front of destinations, so later sacks
+# skip them.
+def empty_sack(destinations)
+  loop do
+    stop("No room left in your #{DESTINATIONS.join(' or ')}. The #{SACK} is still in your hand.") if destinations.empty?
+
+    DRC.wait_for_script_to_complete('transfer-items', [SACK, destinations.first])
+    return if sack_empty?
+
+    # transfer-items puts back whatever doesn't fit
+    DRC.message("*** Your #{destinations.first} is full ***")
+    destinations.shift
+  end
+end
+
+stop('Empty your hands first: one holds the sack, the other moves the items.') if DRC.left_hand || DRC.right_hand
+
+destinations = DESTINATIONS.dup
+emptied = 0
+
+while DRCI.get_item?(SACK, SACK_CONTAINER)
+  DRC.bput("open my #{SACK}", 'momentarily heavier', 'You open', 'That is already open', 'What were you referring to')
+  empty_sack(destinations)
+
+  result = DRC.bput("drop my #{SACK}", 'You drop', 'What were you referring to', 'But you aren')
+  stop("Couldn't drop the #{SACK}. Stopping.") unless result == 'You drop'
+  emptied += 1
+end
+
+DRC.message("*** Emptied #{emptied} #{emptied == 1 ? 'sack' : 'sacks'}. No more in your #{SACK_CONTAINER}. ***")
