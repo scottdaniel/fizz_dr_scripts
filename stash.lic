@@ -24,10 +24,10 @@
   one of each.
 
   Crafting materials are whatever LOOK IN shows in your crafting_container
-  and storage_containers that MATERIALS below says a discipline uses: ingots
-  and metal bars for forging, lumber and bone stacks for shaping, leather and
-  cloth for outfitting, and so on. Every one gets stashed, from whichever
-  container it's in.
+  and storage_containers that MATERIALS below says a discipline uses: ingots,
+  bars and ore for forging, lumber, deeds, bone stacks and stone for shaping,
+  beads for enchanting, leather, cloth and dyes for outfitting, and so on.
+  Every one gets stashed, from whichever container it's in.
 
   Extras are your own list, kept in EXTRAS. It starts as codex, textbook and
   contract. Every one of them you're carrying gets stashed, from whichever
@@ -84,23 +84,33 @@ MATERIALS = {
   'forging'    => {
     'ingots'     => /\bingot$/i,
     'nuggets'    => /\bnugget$/i,
-    'metal bars' => /\bbar$/i
+    'metal bars' => /\bbar$/i,
+    # Mined ore: a size from Elanthipedia's Mining page, then the metal
+    # ("large muracite fragment", "massive quelium lump")
+    'metal ore'  => /\b(?:tiny|small|medium|large|huge|massive|enormous|gargantuan) \S+ (?:fragment|lump)$/i
   },
   'shaping'    => {
-    'lumber'      => /\blumber$/i,
-    'bone stacks' => /\bstack$/i,
-    'stone deeds' => /\b(?:pebble|stone|rock|boulder) \S+ deed$/i # rock quartzite deed, for carving
+    'lumber'       => /\blumber$/i,
+    'lumber deeds' => /\b(?:stick|branch|limb|log) \S+ deed$/i, # log walnut deed; sizes from clean-lumber.lic
+    'bone stacks'  => /\bstack$/i,
+    'stone deeds'  => /\b(?:pebble|stone|rock|boulder) \S+ deed$/i, # rock quartzite deed, for carving
+    # Loose stone, by its size noun: "white mocha stone". Not starstone or
+    # runestone, which have no word break before "stone".
+    'stones'       => /\b(?:pebble|stone|small rock|large rock|boulder)$/i
   },
   'enchanting' => {
-    'sigil-scrolls' => /\bsigil-scroll$/i
+    'sigil-scrolls' => /\bsigil-scroll$/i,
+    # A stone, bone or wood bead is a base for trinkets and foci
+    'beads'         => /\bbead$/i
   },
   'outfitting' => {
     'leather' => /\bleather$/i,
-    # The fabrics sorter's base-sorting.yaml counts as crafting, so not
-    # chamois or cleaning cloth
-    'cloth'   => /\b(?:burlap|cotton|linen|silk|wool) cloth$/i,
+    # The fabrics sorter's base-sorting.yaml counts as crafting, plus felt;
+    # not chamois or cleaning cloth
+    'cloth'   => /\b(?:burlap|cotton|felt|linen|silk|wool) cloth$/i,
     'yarn'    => /\byarn$/i,
-    'thread'  => /\bthread$/i
+    'thread'  => /\bthread$/i,
+    'dyes'    => /\bdye$/i
   },
   # Herbs stay in your remedy_container
   'alchemy'    => {}
