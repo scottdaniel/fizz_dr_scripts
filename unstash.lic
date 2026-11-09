@@ -11,6 +11,10 @@
   vault stays there. Each item's full name is checked when you pick it up. If
   it's the wrong one, it goes back and stays on the list.
 
+  Weapons go back the way combat-trainer puts them away after a hunt: worn
+  again if your standard gear set wears them, else on their harness, in
+  their container, or stowed.
+
   Anything that isn't there anymore is dropped from the list. If there's no
   room to put something away, the rest stays in the vault and on the list for
   next time.
@@ -25,6 +29,7 @@
     ;unstash enchanting    # just enchanting gear and materials
     ;unstash outfitting    # just outfitting gear and materials
     ;unstash alchemy       # just alchemy gear
+    ;unstash weapons       # just your weapons, back where combat-trainer keeps them
     ;unstash extras        # just your extras
 =end
 
@@ -33,7 +38,7 @@ STASH_LIST = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
 
 # What ;stash says each thing is for
 CRAFTING = %w[forging shaping enchanting outfitting alchemy].freeze
-GROUPS = (CRAFTING + ['extras']).freeze
+GROUPS = (CRAFTING + %w[weapons extras]).freeze
 
 # Getting in and out of the vault: the same steps and messages as ;stash
 ARCHES = ['go blackwood arch', 'go ironwood arch', 'go rosewood arch'].freeze
@@ -177,10 +182,18 @@ def fetch(entry, container)
     return :wrong
   end
 
-  return :got if DRCI.put_away_item?(item, [entry['from'], container].compact.uniq)
+  return :got if entry['from'] == 'gear' ? return_weapon? : DRCI.put_away_item?(item, [entry['from'], container].compact.uniq)
 
   put_back(item)
   :container_full
+end
+
+# A weapon ;stash weapons took, put back the way combat-trainer does after a
+# hunt (EquipmentManager): worn again if your standard gear set wears it,
+# else on its harness, in its container, or stowed
+def return_weapon?
+  @equipment ||= EquipmentManager.new
+  @equipment.return_held_gear && settle { hands_empty? }
 end
 
 # groups nil means everything, including anything stashed before ;stash
@@ -195,7 +208,7 @@ groups = case asked_for
          when 'crafting' then CRAFTING
          when *GROUPS then [asked_for]
          else
-           DRC.message('unstash: use ;unstash for everything, or ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting or extras.')
+           DRC.message('unstash: use ;unstash for everything, or ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting, weapons or extras.')
            exit
          end
 

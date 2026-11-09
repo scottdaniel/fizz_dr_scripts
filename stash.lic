@@ -12,6 +12,9 @@
     ;stash enchanting      # just enchanting gear and materials
     ;stash outfitting      # just outfitting gear and materials
     ;stash alchemy         # just alchemy gear
+    ;stash materials       # just the materials, no gear: ingots, ore, lumber, deeds, stacks, stone, beads, cloth...
+    ;stash materials forging   # just one discipline's materials (shaping, enchanting, outfitting too)
+    ;stash weapons         # the weapons in your yaml's weapon_training, for when you're not hunting
     ;stash extras          # just your extras
     ;stash all             # crafting gear and materials plus your extras
     ;stash add <item>      # add something to your extras (taps it first to check the name)
@@ -29,6 +32,12 @@
   beads for enchanting, leather, cloth and dyes for outfitting, and so on.
   Every one gets stashed, from whichever container it's in.
 
+  Weapons are the ones named in your yaml's weapon_training. Each comes out
+  of wherever your yaml's gear list says it's kept, the way combat-trainer
+  gets it: taken off if you wear it, off its harness, out of its sheath or
+  container. ;unstash weapons puts them back the way combat-trainer does
+  after a hunt (worn again if your standard gear set wears it).
+
   Extras are your own list, kept in EXTRAS. It starts as codex, textbook and
   contract. Every one of them you're carrying gets stashed, from whichever
   container it's in.
@@ -39,8 +48,8 @@
 
   What went in is written to STASHED so ;unstash gets back exactly those
   things and puts them back where they came from. Each one is written down
-  with what it's for (forging, shaping, enchanting, outfitting, alchemy or
-  extras), so
+  with what it's for (forging, shaping, enchanting, outfitting, alchemy,
+  weapons or extras), so
   ;unstash forging and the like get back just that.
 =end
 
@@ -350,6 +359,11 @@ def stash_items(gear, extras, settings, material_disciplines = [])
   jobs = gear.map { |item, used_for| [item, used_for, container, true] } +
          find_materials(material_disciplines, settings).map { |item, used_for, from, seen_as| [item, used_for, from, true, seen_as] } +
          extras.map { |item, used_for| [item, used_for, nil, false] }
+  # ;stash materials when you carry none: no trip to the vault for nothing
+  if jobs.empty?
+    DRC.message('stash: nothing to stash.')
+    return
+  end
 
   stashed = load_yaml(STASHED, [])
   put = []
@@ -404,6 +418,89 @@ def stash_items(gear, extras, settings, material_disciplines = [])
   DRC.message("stash: saw these but GET couldn't pick them up: #{missed.join(', ')}") unless missed.empty?
 end
 
+# The weapons in your yaml's weapon_training, each once (the gilt dagger is
+# both Small Edged and Offhand Weapon), as [weapon_training name, gear item].
+# One that isn't in your yaml's gear list is left out: EquipmentManager only
+# knows where gear-list things are kept.
+def weapons_to_stash(settings, manager)
+  settings.weapon_training.to_h.values.compact.uniq.filter_map do |description|
+    weapon = manager.item_by_desc(description)
+    DRC.message("stash: #{description} isn't in your yaml's gear list, so it stays where it is.") unless weapon
+    [description, weapon] if weapon
+  end
+end
+
+# Puts a weapon in hand back where it's kept, as after a hunt: worn again if
+# your standard gear set wears it, else on its harness, in its container,
+# or STOWed (into the sheath, for the cutlass and broadsword)
+def return_weapon(manager)
+  return if manager.return_held_gear && settle { hands_empty? }
+
+  DRC.message("stash: couldn't put #{DRC.right_hand || DRC.left_hand} back. It's still in your hand.")
+  exit
+end
+
+# ;stash weapons, for when you're not hunting. Each weapon comes out of
+# wherever it's kept, the way combat-trainer gets it: taken off if you wear
+# it (the voulge, the knuckles), off its harness (the throwing club, the
+# staff), out of its sheath or container. ;unstash weapons puts each back the
+# same way combat-trainer does after a hunt.
+def stash_weapons(settings)
+  unless hands_empty?
+    DRC.message('stash: empty your hands first.')
+    exit
+  end
+
+  manager = EquipmentManager.new(settings)
+  weapons = weapons_to_stash(settings, manager)
+  if weapons.empty?
+    DRC.message('stash: no weapons to stash: your yaml has none in weapon_training.')
+    return
+  end
+
+  stashed = load_yaml(STASHED, [])
+  put = []
+  not_found = []
+  kept = []
+  full = false
+
+  begin
+    exit unless open_vault(settings)
+
+    weapons.each do |description, weapon|
+      if full
+        kept << description
+        next
+      end
+      unless manager.get_item?(weapon) && settle { !hands_empty? }
+        not_found << description
+        next
+      end
+
+      result = put_in_vault(weapon.short_name)
+      if result == :put
+        put << description
+        # No name: the GET line from the vault gives the full description,
+        # which the yaml doesn't have, so ;unstash takes the weapon by
+        # short_name without checking it
+        stashed << { 'item' => weapon.short_name, 'name' => nil, 'from' => 'gear', 'for' => ['weapons'] }
+        save_yaml(STASHED, stashed)
+      else
+        full = result == :full
+        kept << description
+        return_weapon(manager)
+      end
+    end
+  ensure
+    leave_vault
+  end
+
+  DRC.message("stash: put in your vault: #{put.join(', ')}") unless put.empty?
+  DRC.message("stash: #{full ? 'the vault is full, kept' : "the vault wouldn't take these, kept them"}: #{kept.join(', ')}") unless kept.empty?
+  DRC.message("stash: couldn't find these to stash: #{not_found.join(', ')}") unless not_found.empty?
+  DRC.message('stash: ;unstash weapons gets them back before you hunt.') unless put.empty?
+end
+
 def add_extra(item)
   if item.empty?
     DRC.message('stash: add what? For example: ;stash add gem pouch')
@@ -446,13 +543,15 @@ def remove_extra(item)
   end
 end
 
-def show_list(gear)
+def show_list(gear, settings)
   DISCIPLINES.each do |discipline|
     tools = gear_for([discipline], gear).keys
     materials = MATERIALS[discipline].keys
     DRC.message("stash: #{discipline} (;stash #{discipline}): #{tools.empty? ? 'no gear' : tools.join(', ')}" \
                 "#{", plus any #{materials.join(', ')}" unless materials.empty?}")
   end
+  weapons = settings.weapon_training.to_h.values.compact.uniq
+  DRC.message("stash: weapons (;stash weapons): #{weapons.empty? ? 'none' : weapons.join(', ')}")
   extras = load_extras
   DRC.message("stash: extras (;stash extras): #{extras.empty? ? 'none' : extras.join(', ')}")
 
@@ -466,7 +565,7 @@ def show_list(gear)
     names = entries.map { |entry| entry['name'] || entry['item'] }
     DRC.message("stash: in your vault#{" for #{used_for}" unless used_for.empty?}: #{names.join(', ')}")
   end
-  DRC.message('stash: ;unstash gets it all back, or ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting or extras gets just that.')
+  DRC.message('stash: ;unstash gets it all back, or ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting, weapons or extras gets just that.')
 end
 
 settings = get_settings
@@ -479,6 +578,17 @@ when 'crafting'
   stash_items(gear, {}, settings, DISCIPLINES)
 when *DISCIPLINES
   stash_items(gear_for([command], gear), {}, settings, [command])
+when 'materials', 'material'
+  # Just the materials, the heavy part, leaving the tools where they are
+  if item.empty?
+    stash_items({}, {}, settings, DISCIPLINES)
+  elsif DISCIPLINES.include?(item) && !MATERIALS[item].empty?
+    stash_items({}, {}, settings, [item])
+  else
+    DRC.message("stash: #{item} has no materials. Use ;stash materials, or ;stash materials #{DISCIPLINES.reject { |discipline| MATERIALS[discipline].empty? }.join(', ')}.")
+  end
+when 'weapons', 'weapon'
+  stash_weapons(settings)
 when 'extras'
   stash_items({}, extras_for(gear), settings)
 when 'all'
@@ -488,7 +598,7 @@ when 'add'
 when 'remove'
   remove_extra(item)
 when 'list'
-  show_list(gear)
+  show_list(gear, settings)
 else
-  DRC.message('stash: use ;stash crafting, forging, shaping, enchanting, outfitting, alchemy, extras, all, add <item>, remove <item>, or list.')
+  DRC.message('stash: use ;stash crafting, forging, shaping, enchanting, outfitting, alchemy, materials, weapons, extras, all, add <item>, remove <item>, or list.')
 end
