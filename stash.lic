@@ -6,20 +6,22 @@
   then closes it and leaves you in the Carousel. ;unstash gets it all back.
 
   Usage:
-    ;stash crafting        # forging, shaping, enchanting and outfitting gear and materials
+    ;stash crafting        # forging, shaping, enchanting, outfitting and alchemy gear and materials
     ;stash forging         # just forging gear and materials
     ;stash shaping         # just shaping gear and materials
     ;stash enchanting      # just enchanting gear and materials
     ;stash outfitting      # just outfitting gear and materials
+    ;stash alchemy         # just alchemy gear
     ;stash extras          # just your extras
     ;stash all             # crafting gear and materials plus your extras
     ;stash add <item>      # add something to your extras (taps it first to check the name)
     ;stash remove <item>   # take something off your extras
     ;stash list            # show your gear, your extras, and what's stashed right now
 
-  Crafting gear is forging_tools, shaping_tools, enchanting_tools and
-  outfitting_tools from your yaml, plus the books, logbooks and supplies in
-  SUPPLIES below. It comes out of your crafting_container, one of each.
+  Crafting gear is forging_tools, shaping_tools, enchanting_tools,
+  outfitting_tools and alchemy_tools from your yaml, plus the books, logbooks
+  and supplies in SUPPLIES below. It comes out of your crafting_container,
+  one of each.
 
   Crafting materials are whatever LOOK IN shows in your crafting_container
   and storage_containers that MATERIALS below says a discipline uses: ingots
@@ -37,7 +39,8 @@
 
   What went in is written to STASHED so ;unstash gets back exactly those
   things and puts them back where they came from. Each one is written down
-  with what it's for (forging, shaping, enchanting, outfitting or extras), so
+  with what it's for (forging, shaping, enchanting, outfitting, alchemy or
+  extras), so
   ;unstash forging and the like get back just that.
 =end
 
@@ -64,7 +67,13 @@ SUPPLIES = {
     'enchanting logbook',
     'fount' # fragile rough mana fount
   ],
-  'outfitting' => []
+  'outfitting' => [],
+  # Neither carried yet (11/8/2026); skipped until they are. remedy.lic gets
+  # the book as "remed book".
+  'alchemy' => [
+    'remed.book', # book of apprentice remedies instructions
+    'alchemy logbook'
+  ]
 }.freeze
 # ;stash crafting does all of these
 DISCIPLINES = SUPPLIES.keys.freeze
@@ -92,18 +101,22 @@ MATERIALS = {
     'cloth'   => /\b(?:burlap|cotton|linen|silk|wool) cloth$/i,
     'yarn'    => /\byarn$/i,
     'thread'  => /\bthread$/i
-  }
+  },
+  # Herbs stay in your remedy_container
+  'alchemy'    => {}
 }.freeze
 
 # Getting in and out of the vault, as Fizzlestiks did it by hand at the
 # Crossing Carousel on 2026-11-07. Plain GO ARCH is the platinum arch, which
-# the attendant blocks ("Sorry, but access to that arch is restricted."), so
-# the arches are named; the blackwood one worked. The busy-booth replies come
-# from Tirost's Genie vault.cmd.
-ARCHES = ['go blackwood arch', 'go ironwood arch', 'go rosewood arch', 'go platinum arch'].freeze
+# the attendant blocks ("Sorry, but access to that arch is restricted."); the
+# blackwood arch worked. The ironwood and rosewood arches are for Premium and
+# Platinum accounts, so only the blackwood one is used. The busy-booth replies
+# come from Tirost's Genie vault.cmd.
+ARCH = 'go blackwood arch'
 ARCH_IN = /escorts you through/
 RENT_DUE = /\brent\b/i
-ARCH_BUSY = /restricted|blocks|someone|using|Sorry/
+ARCH_RESTRICTED = /access to that arch is restricted/
+ARCH_BUSY = /blocks|someone|using|Sorry/
 LEVER_PULLED = /door pops open/
 VAULT_OPENED = [/^The vault opens/, /already open/i].freeze
 CHAMBER = /Chamber/
@@ -192,24 +205,26 @@ def open_vault(settings)
   true
 end
 
-# Tries each arch, waiting a while if every booth is in use
+# Through the blackwood arch, waiting a while if its booth is in use
 def enter_booth
   6.times do
-    ARCHES.each do |arch|
-      result = DRC.bput(arch, ARCH_IN, RENT_DUE, ARCH_BUSY, *NOT_FOUND)
-      if result =~ ARCH_IN
-        @vault_steps << :booth
-        return true
-      end
-      if result =~ RENT_DUE
-        DRC.message('stash: vault rent is due. Pay it at the Carousel desk (GO DESK), then try again.')
-        return false
-      end
+    result = DRC.bput(ARCH, ARCH_IN, RENT_DUE, ARCH_RESTRICTED, ARCH_BUSY, *NOT_FOUND)
+    if result =~ ARCH_IN
+      @vault_steps << :booth
+      return true
     end
-    DRC.message('stash: every Carousel booth is busy. Waiting 10 seconds.')
+    if result =~ RENT_DUE
+      DRC.message('stash: vault rent is due. Pay it at the Carousel desk (GO DESK), then try again.')
+      return false
+    end
+    if result =~ ARCH_RESTRICTED || NOT_FOUND.any? { |pattern| result =~ pattern }
+      DRC.message("stash: couldn't go through the blackwood arch: #{result}")
+      return false
+    end
+    DRC.message('stash: the blackwood booth is busy. Waiting 10 seconds.')
     pause 10
   end
-  DRC.message('stash: gave up waiting for a Carousel booth.')
+  DRC.message('stash: gave up waiting for the blackwood booth.')
   false
 end
 
@@ -229,7 +244,8 @@ def crafting_gear(settings)
     'forging'    => settings.forging_tools.to_a,
     'shaping'    => settings.shaping_tools.to_a,
     'enchanting' => settings.enchanting_tools.to_a,
-    'outfitting' => settings.outfitting_tools.to_a
+    'outfitting' => settings.outfitting_tools.to_a,
+    'alchemy'    => settings.alchemy_tools.to_a
   }
   DISCIPLINES.each_with_object({}) do |discipline, gear|
     (tools[discipline] + SUPPLIES[discipline]).each { |item| gear[item] = gear.fetch(item, []) | [discipline] }
@@ -419,8 +435,9 @@ end
 def show_list(gear)
   DISCIPLINES.each do |discipline|
     tools = gear_for([discipline], gear).keys
-    DRC.message("stash: #{discipline} (;stash #{discipline}): #{tools.empty? ? 'no gear' : tools.join(', ')}, " \
-                "plus any #{MATERIALS[discipline].keys.join(', ')}")
+    materials = MATERIALS[discipline].keys
+    DRC.message("stash: #{discipline} (;stash #{discipline}): #{tools.empty? ? 'no gear' : tools.join(', ')}" \
+                "#{", plus any #{materials.join(', ')}" unless materials.empty?}")
   end
   extras = load_extras
   DRC.message("stash: extras (;stash extras): #{extras.empty? ? 'none' : extras.join(', ')}")
@@ -435,7 +452,7 @@ def show_list(gear)
     names = entries.map { |entry| entry['name'] || entry['item'] }
     DRC.message("stash: in your vault#{" for #{used_for}" unless used_for.empty?}: #{names.join(', ')}")
   end
-  DRC.message('stash: ;unstash gets it all back, or ;unstash forging, shaping, enchanting, outfitting, crafting or extras gets just that.')
+  DRC.message('stash: ;unstash gets it all back, or ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting or extras gets just that.')
 end
 
 settings = get_settings
@@ -459,5 +476,5 @@ when 'remove'
 when 'list'
   show_list(gear)
 else
-  DRC.message('stash: use ;stash crafting, forging, shaping, enchanting, outfitting, extras, all, add <item>, remove <item>, or list.')
+  DRC.message('stash: use ;stash crafting, forging, shaping, enchanting, outfitting, alchemy, extras, all, add <item>, remove <item>, or list.')
 end

@@ -24,6 +24,7 @@
     ;unstash shaping       # just shaping gear and materials
     ;unstash enchanting    # just enchanting gear and materials
     ;unstash outfitting    # just outfitting gear and materials
+    ;unstash alchemy       # just alchemy gear
     ;unstash extras        # just your extras
 =end
 
@@ -31,14 +32,15 @@
 STASH_LIST = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
 
 # What ;stash says each thing is for
-CRAFTING = %w[forging shaping enchanting outfitting].freeze
+CRAFTING = %w[forging shaping enchanting outfitting alchemy].freeze
 GROUPS = (CRAFTING + ['extras']).freeze
 
 # Getting in and out of the vault: the same steps and messages as ;stash
-ARCHES = ['go blackwood arch', 'go ironwood arch', 'go rosewood arch', 'go platinum arch'].freeze
+ARCH = 'go blackwood arch'
 ARCH_IN = /escorts you through/
 RENT_DUE = /\brent\b/i
-ARCH_BUSY = /restricted|blocks|someone|using|Sorry/
+ARCH_RESTRICTED = /access to that arch is restricted/
+ARCH_BUSY = /blocks|someone|using|Sorry/
 LEVER_PULLED = /door pops open/
 VAULT_OPENED = [/^The vault opens/, /already open/i].freeze
 CHAMBER = /Chamber/
@@ -112,24 +114,26 @@ def open_vault(settings)
   true
 end
 
-# Tries each arch, waiting a while if every booth is in use
+# Through the blackwood arch, waiting a while if its booth is in use
 def enter_booth
   6.times do
-    ARCHES.each do |arch|
-      result = DRC.bput(arch, ARCH_IN, RENT_DUE, ARCH_BUSY, *NOT_FOUND)
-      if result =~ ARCH_IN
-        @vault_steps << :booth
-        return true
-      end
-      if result =~ RENT_DUE
-        DRC.message('unstash: vault rent is due. Pay it at the Carousel desk (GO DESK), then try again.')
-        return false
-      end
+    result = DRC.bput(ARCH, ARCH_IN, RENT_DUE, ARCH_RESTRICTED, ARCH_BUSY, *NOT_FOUND)
+    if result =~ ARCH_IN
+      @vault_steps << :booth
+      return true
     end
-    DRC.message('unstash: every Carousel booth is busy. Waiting 10 seconds.')
+    if result =~ RENT_DUE
+      DRC.message('unstash: vault rent is due. Pay it at the Carousel desk (GO DESK), then try again.')
+      return false
+    end
+    if result =~ ARCH_RESTRICTED || NOT_FOUND.any? { |pattern| result =~ pattern }
+      DRC.message("unstash: couldn't go through the blackwood arch: #{result}")
+      return false
+    end
+    DRC.message('unstash: the blackwood booth is busy. Waiting 10 seconds.')
     pause 10
   end
-  DRC.message('unstash: gave up waiting for a Carousel booth.')
+  DRC.message('unstash: gave up waiting for the blackwood booth.')
   false
 end
 
@@ -188,7 +192,7 @@ groups = case asked_for
          when 'crafting' then CRAFTING
          when *GROUPS then [asked_for]
          else
-           DRC.message('unstash: use ;unstash for everything, or ;unstash forging, shaping, enchanting, outfitting, crafting or extras.')
+           DRC.message('unstash: use ;unstash for everything, or ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting or extras.')
            exit
          end
 
