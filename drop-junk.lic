@@ -9,10 +9,12 @@
   from your crafting_container:
     - unfinished thrusting blades (forging work orders that stopped on a
       missing hilt, 2026-11-09)
-    - botched and marred reinforced netting (Zasele turned them down) and
-      the netting instructions
+    - botched and marred reinforced netting (Zasele turned them down)
   Each one's full name is checked first: a finished thrusting blade, or
   netting that isn't botched or marred, is put back and that kind stops.
+  Netting instructions stay: taskmaster needs them for Zasele's netting
+  tasks, and when a lost set was replaced she warned she'll stop replacing
+  them for people who waste them (2026-11-10).
 
   Name items and it takes every one of each from your crafting_container and
   storage_containers, whatever its full name. One word per item, the noun;
@@ -36,8 +38,7 @@ ROOM = 8246
 # The crafting leftovers, and what the GET line has to say for each to be junk
 LEFTOVERS = [
   ['thrusting blade', /\bunfinished\b/],
-  ['netting', /\b(?:botched|marred)\b/],
-  ['netting instructions', /netting instructions/]
+  ['netting', /\b(?:botched|marred)\b/]
 ].freeze
 # The most of one kind from one container, so a GET that keeps answering
 # can't loop
