@@ -15,22 +15,28 @@
   again if your standard gear set wears them, else on their harness, in
   their container, or stowed.
 
-  Anything that isn't there anymore is dropped from the list. If there's no
+  If the vault doesn't know an item by the name ;stash wrote down (GET MANA
+  FOUNT doesn't work), it tries just the noun (GET FOUNT), still checking the
+  full name. Anything that isn't there anymore is dropped from the list. If there's no
   room to put something away, the rest stays in the vault and on the list for
   next time.
 
-  ;stash writes down what each thing is for, so you can get back part of it:
+  ;stash writes down what each thing is for, so you can get back part of it.
+  Crafting materials (ingots, deeds, cloth and the like) are heavy, so they
+  only come back when you ask for materials, or for everything.
 
   Usage:
-    ;unstash               # everything
-    ;unstash crafting      # all crafting gear and materials
-    ;unstash forging       # just forging gear and materials
-    ;unstash shaping       # just shaping gear and materials
-    ;unstash enchanting    # just enchanting gear and materials
-    ;unstash outfitting    # just outfitting gear and materials
-    ;unstash alchemy       # just alchemy gear
-    ;unstash weapons       # just your weapons, back where combat-trainer keeps them
-    ;unstash extras        # just your extras
+    ;unstash                    # everything, materials too
+    ;unstash crafting           # all crafting gear, no materials
+    ;unstash forging            # just forging gear, no materials
+    ;unstash shaping            # just shaping gear, no materials
+    ;unstash enchanting         # just enchanting gear, no materials
+    ;unstash outfitting         # just outfitting gear, no materials
+    ;unstash alchemy            # just alchemy gear
+    ;unstash materials          # just the crafting materials
+    ;unstash materials forging  # just forging's materials (or shaping, and so on)
+    ;unstash weapons            # just your weapons, back where combat-trainer keeps them
+    ;unstash extras             # just your extras
 =end
 
 # What's stashed right now, written by ;stash
@@ -170,10 +176,22 @@ def put_back(item)
   exit
 end
 
+def get_from_vault(item)
+  DRC.bput("get #{item} from vault", *GET_SUCCESS, *GET_MISSING, *DRCI::GET_ITEM_FAILURE_PATTERNS)
+end
+
 # Returns :got, :missing, :wrong, :failed, or :container_full
 def fetch(entry, container)
   item, name = entry.values_at('item', 'name')
-  result = DRC.bput("get #{item} from vault", *GET_SUCCESS, *GET_MISSING, *DRCI::GET_ITEM_FAILURE_PATTERNS)
+  result = get_from_vault(item)
+  # The word before the noun isn't always one GET takes: GET MANA FOUNT says
+  # "What were you referring to?" for a fragile rough mana fount, so two of
+  # them were left in the vault and dropped from the list (2026-11-08 and
+  # 11-09). Try the bare noun; the name check below makes sure it's ours.
+  if name && item.include?(' ') && GET_MISSING.any? { |pattern| result =~ pattern }
+    item = item.split.last
+    result = get_from_vault(item)
+  end
   return :missing if GET_MISSING.any? { |pattern| result =~ pattern }
   return :failed unless settle { !hands_empty? }
 
@@ -196,21 +214,38 @@ def return_weapon?
   @equipment.return_held_gear && settle { hands_empty? }
 end
 
-# groups nil means everything, including anything stashed before ;stash
-# wrote down what it's for
-def wanted?(entry, groups)
-  groups.nil? || (entry['for'].to_a & groups).any?
+# A crafting material ;stash took (it marks them), not gear
+def material?(entry)
+  entry['kind'] == 'materials'
+end
+
+# groups nil means everything, materials and anything stashed before ;stash
+# wrote down what it's for. Otherwise the entry has to be for one of the
+# groups, and be a material if materials is true, or not one if it's false.
+def wanted?(entry, groups, materials)
+  return true if groups.nil?
+
+  (entry['for'].to_a & groups).any? && material?(entry) == materials
 end
 
 asked_for = Script.current.vars[1].to_s.downcase
-groups = case asked_for
-         when '', 'all' then nil
-         when 'crafting' then CRAFTING
-         when *GROUPS then [asked_for]
-         else
-           DRC.message('unstash: use ;unstash for everything, or ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting, weapons or extras.')
-           exit
-         end
+which = Script.current.vars[2].to_s.downcase
+groups, materials = case asked_for
+                    when '', 'all' then [nil, nil]
+                    when 'crafting' then [CRAFTING, false]
+                    when 'materials', 'material'
+                      if which.empty? then [CRAFTING, true]
+                      elsif CRAFTING.include?(which) then [[which], true]
+                      else
+                        DRC.message("unstash: use ;unstash materials, or ;unstash materials #{CRAFTING.join(', ')}.")
+                        exit
+                      end
+                    when *GROUPS then [[asked_for], false]
+                    else
+                      DRC.message('unstash: use ;unstash for everything, or ;unstash forging, shaping, enchanting, outfitting, alchemy, ' \
+                                  'crafting, materials, weapons or extras.')
+                      exit
+                    end
 
 stash_list = load_stash_list
 if stash_list.empty?
@@ -218,8 +253,8 @@ if stash_list.empty?
   exit
 end
 
-if stash_list.none? { |entry| wanted?(entry, groups) }
-  DRC.message("unstash: nothing for #{asked_for} is stashed right now. ;stash list shows what is.")
+if stash_list.none? { |entry| wanted?(entry, groups, materials) }
+  DRC.message("unstash: nothing for #{[asked_for, which].reject(&:empty?).join(' ')} is stashed right now. ;stash list shows what is.")
   exit
 end
 
@@ -238,7 +273,7 @@ begin
   # Newest first
   (stash_list.size - 1).downto(0) do |index|
     entry = stash_list[index]
-    next unless wanted?(entry, groups)
+    next unless wanted?(entry, groups, materials)
 
     result = fetch(entry, container)
     results[result] << (entry['name'] || entry['item'])
@@ -256,4 +291,4 @@ DRC.message("unstash: got back: #{results[:got].join(', ')}") unless results[:go
 DRC.message("unstash: not in the vault anymore, dropped from the list: #{results[:missing].join(', ')}") unless results[:missing].empty?
 DRC.message("unstash: found something else first, left it and kept on the list: #{results[:wrong].join(', ')}") unless results[:wrong].empty?
 DRC.message("unstash: couldn't pick up, kept on the list: #{results[:failed].join(', ')}") unless results[:failed].empty?
-DRC.message("unstash: no room to put #{results[:container_full].first} away. #{stash_list.count { |entry| wanted?(entry, groups) }} item(s) still in the vault and on the list.") unless results[:container_full].empty?
+DRC.message("unstash: no room to put #{results[:container_full].first} away. #{stash_list.count { |entry| wanted?(entry, groups, materials) }} item(s) still in the vault and on the list.") unless results[:container_full].empty?

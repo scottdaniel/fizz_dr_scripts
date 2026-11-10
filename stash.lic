@@ -51,7 +51,9 @@
   things and puts them back where they came from. Each one is written down
   with what it's for (forging, shaping, enchanting, outfitting, alchemy,
   weapons or extras), so
-  ;unstash forging and the like get back just that.
+  ;unstash forging and the like get back just that. Materials are marked as
+  materials: ;unstash crafting and ;unstash forging leave them in the vault,
+  and ;unstash materials gets them.
 =end
 
 # What's stashed right now. Shared with unstash.
@@ -402,7 +404,10 @@ def stash_items(gear, extras, settings, material_disciplines = [])
           put << item
           # A copy of used_for each time: two codices sharing one array would
           # be written as a YAML alias, which safe_load refuses to read back
-          stashed << { 'item' => vault_address(item, name), 'name' => name, 'from' => from, 'for' => used_for.dup }
+          entry = { 'item' => vault_address(item, name), 'name' => name, 'from' => from, 'for' => used_for.dup }
+          # ;unstash crafting leaves these in the vault; ;unstash materials gets them
+          entry['kind'] = 'materials' if seen_as
+          stashed << entry
           save_yaml(STASHED, stashed)
           break if just_one
         when :full
@@ -572,11 +577,13 @@ def show_list(gear, settings)
     return
   end
 
-  stashed.group_by { |entry| entry['for'].to_a.join('/') }.each do |used_for, entries|
+  stashed.group_by { |entry| [entry['for'].to_a.join('/'), entry['kind']] }.each do |(used_for, kind), entries|
     names = entries.map { |entry| entry['name'] || entry['item'] }
-    DRC.message("stash: in your vault#{" for #{used_for}" unless used_for.empty?}: #{names.join(', ')}")
+    what = [kind, ("for #{used_for}" unless used_for.empty?)].compact.join(' ')
+    DRC.message("stash: in your vault#{" (#{what})" unless what.empty?}: #{names.join(', ')}")
   end
-  DRC.message('stash: ;unstash gets it all back, or ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting, weapons or extras gets just that.')
+  DRC.message('stash: ;unstash gets it all back. ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting, weapons or extras ' \
+              'gets just that, without materials; ;unstash materials (or ;unstash materials forging) gets the materials.')
 end
 
 settings = get_settings
