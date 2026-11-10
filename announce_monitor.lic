@@ -11,15 +11,21 @@
     3) creature capture, e.g. "Marine creatures are loose on Andreshlew Island! ...",
        with a reminder to ;capture-critter hollow_eve to join in, and
        "All of the creatures have been captured!" or "...have been caught!" when it's over
+  It also posts when the game connection drops, since you'll miss announcements
+  until you log back in (not when you EXIT or QUIT, close Saga, idle out, or log
+  in somewhere else). That message is sent by a separate process that keeps
+  trying every 30 seconds for up to an hour, in case it was your internet that
+  dropped.
   Every message starts with the character's name, so one webhook can serve all
   of your characters.
 
   Usage:
-    ;announce_monitor          run the monitor (autostart it with
-                               ;autostart add announce_monitor)
-    ;announce_monitor setup    GTK window: webhook URL, which announcements to
-                               send, test button
-    ;announce_monitor test     send a test message to the webhook
+    ;announce_monitor            run the monitor (autostart it with
+                                 ;autostart add announce_monitor)
+    ;announce_monitor setup      GTK window: webhook URL, which announcements to
+                                 send, test button
+    ;announce_monitor test       send a test message to the webhook
+    ;announce_monitor test drop  send a test disconnect alert the way a real one goes
 
   The webhook URL is shared by all characters and saved in
   <lich data dir>/announce_monitor.yaml (not in the scripts repo).
@@ -40,6 +46,7 @@
 
 require 'json'
 require 'net/http'
+require 'rbconfig'
 require 'uri'
 require 'yaml'
 
@@ -86,12 +93,26 @@ module AnnounceMonitor
   # Players' speech is marked up whatever the verb: <preset id="speech"><a ... noun="Emily">Emily</a> quietly says,</preset>
   SPEECH_XML  = /<preset id=["'](?:speech|whisper)["']/
 
+  # Disconnect alert. Lich notes why it's shutting down: a typed EXIT or QUIT (:user_exit)
+  # and closing Saga (:client_disconnect) get no alert, and these network errors always do.
+  DROPS       = %i[game_timeout connection_reset connection_pipe connection_aborted
+                   connection_tls_error websocket_protocol_error game_stream_desync].freeze
+  # The game closing the connection (:game_eof) is also how a script's EXIT, an idle logout
+  # and logging in somewhere else end, so it only counts when the game had gone quiet first
+  # (Lich waits for 100 seconds of silence before it checks the connection)...
+  STALL       = 60
+  # ...and not within 15 minutes of one of these
+  LEAVING     = /\AInvalid login key|YOU HAVE BEEN IDLE TOO LONG/
+  LEAVE_FOR   = 900
+  RETRY_EVERY = 30     # the alert keeps trying this often...
+  RETRY_FOR   = 3600   # ...for this long, in case it was your internet that dropped
+
   # ---- settings ----
 
   def self.settings
     raw = (YAML.safe_load(File.read(SETTINGS_FILE)) rescue nil)
     raw = {} unless raw.is_a?(Hash)
-    { 'webhook_url' => '' }.merge(KINDS.keys.to_h { |k| [k, true] }).merge(raw)
+    { 'webhook_url' => '', 'disconnects' => true }.merge(KINDS.keys.to_h { |k| [k, true] }).merge(raw)
   end
 
   def self.save(cfg)
@@ -130,6 +151,66 @@ module AnnounceMonitor
     echo ok ? "test message sent (#{info})" : "test message failed: #{info}"
   end
 
+  # Runs on its own, outside Lich, so it keeps trying after Lich has exited.
+  # Reads {url, text, every, for} as JSON on stdin; stops once Discord takes it or turns it down.
+  SENDER = <<~'RUBY'
+    require 'json'
+    require 'net/http'
+    require 'uri'
+    job  = JSON.parse($stdin.read)
+    uri  = URI(job['url'])
+    stop = Time.now + job['for']
+    loop do
+      code = begin
+        Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https', open_timeout: 10, read_timeout: 10) do |http|
+          http.post(uri.request_uri, JSON.generate(content: job['text']), 'Content-Type' => 'application/json')
+        end.code.to_i
+      rescue StandardError
+        0
+      end
+      break if code.between?(200, 499) && code != 429
+      break if Time.now + job['every'] > stop
+      sleep job['every']
+    end
+  RUBY
+
+  # Hands a message to SENDER in a process of its own; returns its pid
+  def self.send_later(url, text, every: RETRY_EVERY, for_secs: RETRY_FOR)
+    r, w = IO.pipe
+    pid = Process.spawn(RbConfig.ruby, '-e', SENDER, in: r, out: File::NULL, err: File::NULL, pgroup: true)
+    r.close
+    w.write(JSON.generate(url: url, text: text[0, 1990], every: every, for: for_secs))
+    w.close
+    Process.detach(pid)
+    pid
+  end
+
+  # Whether Lich is shutting down because the game connection dropped
+  def self.dropped?(reason, now = Time.now)
+    return true if DROPS.include?(reason)
+    return false unless reason == :game_eof
+    leaving = @leaving_at && now - @leaving_at < LEAVE_FOR
+    !leaving && (@heard.nil? || now - @heard >= STALL)
+  end
+
+  # before_dying: on a dropped connection, tell Discord you're no longer getting announcements
+  def self.alert_drop(test: false)
+    reason = (Lich::Common::ShutdownCoordinator.reason if defined?(Lich::Common::ShutdownCoordinator))
+    return unless test || dropped?(reason)
+    cfg = settings
+    url = cfg['webhook_url'].to_s.strip
+    return if url.empty? || (cfg['disconnects'] == false && !test)
+    return echo('the webhook is not an https:// URL') unless URI(url).is_a?(URI::HTTPS)
+    at  = (@heard || Time.now).strftime('%-I:%M %p')
+    msg = "[#{Char.name}] #{'(test) ' if test}Lost the connection to the game around #{at}, " \
+          "so announcements won't come through until you log back in."
+    pid = send_later(url, msg)
+    echo "#{test ? 'test disconnect alert' : "connection dropped (#{reason})"}: handed to process #{pid}, " \
+         "which keeps trying for up to #{RETRY_FOR / 60} minutes"
+  rescue StandardError => e
+    respond "[announce_monitor] disconnect alert: #{e.class}: #{e.message}"
+  end
+
   # ---- reading the game ----
 
   def self.text_of(xml)
@@ -151,6 +232,7 @@ module AnnounceMonitor
 
   # Called by the downstream hook on every server string.
   def self.watch(xml)
+    @heard = Time.now
     skip = xml.match?(CHAT_STREAM) || xml.match?(ROOM_XML)
     xml.each_line do |raw|
       raw.scan(OUTPUT) { |(style)| @mono = (style == 'mono') }
@@ -161,6 +243,7 @@ module AnnounceMonitor
       @talk = false if raw.include?('<prompt')
       next if skip || @mono || talk
       line  = text_of(raw).strip
+      @leaving_at = Time.now if line.match?(LEAVING)
       kinds = kinds_for(line, room: XMLData.room_title.to_s, tweet: tweet)
       @queue << [kinds, line] unless kinds.empty?
     end
@@ -171,6 +254,7 @@ module AnnounceMonitor
   def self.run
     echo 'no webhook set yet -- run ;announce_monitor setup' if settings['webhook_url'].to_s.strip.empty?
     @queue = Queue.new
+    @heard = Time.now
     DownstreamHook.add(HOOK, proc { |xml|
       begin
         watch(xml)
@@ -241,6 +325,9 @@ module AnnounceMonitor
         vbox.pack_start(cb, expand: false, fill: false, padding: 0)
         [key, cb]
       end
+      drops = Gtk::CheckButton.new('Alert when the game connection drops')
+      drops.active = cfg['disconnects'] != false
+      vbox.pack_start(drops, expand: false, fill: false, padding: 0)
 
       status = Gtk::Label.new('')
       status.set_xalign(0.0)
@@ -262,7 +349,8 @@ module AnnounceMonitor
       vbox.pack_start(btns, expand: false, fill: false, padding: 4)
       save = Gtk::Button.new(label: 'Save')
       save.signal_connect('clicked') do
-        AnnounceMonitor.save({ 'webhook_url' => url.text.strip }.merge(boxes.to_h { |k, cb| [k, cb.active?] }))
+        AnnounceMonitor.save({ 'webhook_url' => url.text.strip, 'disconnects' => drops.active? }
+                               .merge(boxes.to_h { |k, cb| [k, cb.active?] }))
         saved = true
         win.destroy
       end
@@ -285,11 +373,16 @@ case variable[1].to_s.downcase
 when 'setup'
   AnnounceMonitor.setup
 when 'test'
-  AnnounceMonitor.test
+  if variable[2].to_s.downcase == 'drop'
+    AnnounceMonitor.alert_drop(test: true)
+  else
+    AnnounceMonitor.test
+  end
 when ''
   no_kill_all
   no_pause_all
+  before_dying { AnnounceMonitor.alert_drop }
   AnnounceMonitor.run
 else
-  echo 'usage: ;announce_monitor  (run the monitor)   |   ;announce_monitor setup   |   ;announce_monitor test'
+  echo 'usage: ;announce_monitor  (run the monitor)   |   ;announce_monitor setup   |   ;announce_monitor test [drop]'
 end
