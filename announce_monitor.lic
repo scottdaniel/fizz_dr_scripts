@@ -28,7 +28,7 @@
   including the TWEETs the game sends on its "ooc" stream (Saga's
   [Announcements]). A line that mentions raffles or Limited Treasures is sent
   on, unless it's only something happening around you: room descriptions, chat
-  channels, someone in the room (or you) talking, raffle tickets, the raffle
+  channels, anyone talking (players, you, shopkeepers), raffle tickets, the raffle
   attendant and result board, tables like your ticket or the RAFFLE listing,
   or anything at all while you're inside the Limited Treasures shop. A TWEET
   always goes through, even while you're waiting in the lounge.
@@ -80,8 +80,11 @@ module AnnounceMonitor
   # Tables (your ticket, the result board, the RAFFLE listing) come between
   # <output class="mono"/> and <output class=""/>; they're replies, never announcements.
   OUTPUT      = /<output class=["']([^"']*)["']/
-  # "Remu says, ...", "Vekara says in a Siksrajan accent, ...", "You ask, ..."
-  SPEECH      = /\A(\w+)\b[^"]*?\b(?:says?|asks?|exclaims?|whispers?|yells?|shouts?|murmurs?|mutters?|sings?|thinks?)\b[^"]*"/
+  # Anyone talking: "Remu says, ...", "Vekara says in a Siksrajan accent, ...", "You ask, ...".
+  # Announcements are TWEETs or plain lines, never someone saying something.
+  SPEECH      = /\A\w+\b[^"]*?\b(?:says?|asks?|exclaims?|whispers?|yells?|shouts?|murmurs?|mutters?|sings?|thinks?|recites?)\b[^"]*"/
+  # Players' speech is marked up whatever the verb: <preset id="speech"><a ... noun="Emily">Emily</a> quietly says,</preset>
+  SPEECH_XML  = /<preset id=["'](?:speech|whisper)["']/
 
   # ---- settings ----
 
@@ -134,13 +137,13 @@ module AnnounceMonitor
   end
 
   # The KINDS keys a game line is an announcement for ([] for most lines).
-  # pcs: names of the people in the room; room: the room's title;
+  # room: the room's title;
   # tweet: it's a game-wide TWEET, so none of the "only around you" checks apply.
-  def self.kinds_for(line, pcs: [], room: '', tweet: false)
+  def self.kinds_for(line, room: '', tweet: false)
     return [] if line.empty? || line.start_with?('[', '>', '---', 'You also see') || line.match?(CONTENTS)
     kinds = KINDS.select { |_, kind| line.match?(kind[:pattern]) }.keys
     return kinds if tweet || kinds.empty?
-    return [] if line =~ SPEECH && ($1 == 'You' || pcs.include?($1))
+    return [] if line.match?(SPEECH)
     kinds.delete('raffles') if RAFFLE_ROOM.any? { |pat| line.match?(pat) }
     kinds.delete('limited_treasures') if room.match?(/limited treasures/i)
     kinds
@@ -151,10 +154,14 @@ module AnnounceMonitor
     skip = xml.match?(CHAT_STREAM) || xml.match?(ROOM_XML)
     xml.each_line do |raw|
       raw.scan(OUTPUT) { |(style)| @mono = (style == 'mono') }
-      next if skip || @mono
+      tweet = raw.match?(TWEET)
+      # A player's speech, and the lines of a recital after "Dreaven recites:", run until the next prompt
+      @talk = true if !tweet && raw.match?(SPEECH_XML)
+      talk  = @talk && !tweet
+      @talk = false if raw.include?('<prompt')
+      next if skip || @mono || talk
       line  = text_of(raw).strip
-      kinds = kinds_for(line, pcs: (DRRoom.pcs rescue []).to_a, room: XMLData.room_title.to_s,
-                              tweet: raw.match?(TWEET))
+      kinds = kinds_for(line, room: XMLData.room_title.to_s, tweet: tweet)
       @queue << [kinds, line] unless kinds.empty?
     end
   end
