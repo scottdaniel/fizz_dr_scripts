@@ -2,6 +2,8 @@
   raffle-watch.lic
 
   Plays the festival raffle for you and reports to the Familiar window:
+    - your odds when picks close, from the tickets torn off while they were
+      open (needs the script running since picks opened)
     - each winner as their name goes up on the result board
     - if it's you: a beep, a big notice, and PUT TICKET ON COUNTER to claim
     - if the drawing ends without you: PUT TICKET IN BUCKET
@@ -33,6 +35,10 @@ NOT_A_WINNER = /examines your ticket but shakes (?:her|his) head/
 GOT_TICKET = /^You (?:tear off|get) .*raffle ticket/
 DROPPED_TICKET = /^You (?:drop|put) .*raffle ticket/
 ATTENDANT = /Attendant \w+/
+TORE_TICKET = /\btears? off [^\n]*?raffle ticket/
+# Fifth, Fourth, Third, Second and Grand; one ticket can only win one of them
+PRIZES = 5
+COUNT_HOOK = 'raffle-watch-count'
 # "What were you referring to?" / "I don't understand what you're referring to."
 NOT_FOUND = /referring to/
 NOT_FOUND_LINE = /.*referring to.*/
@@ -40,6 +46,13 @@ NOT_FOUND_LINE = /.*referring to.*/
 def to_familiar(text)
   safe = text.gsub('&', '&amp;').gsub('<', '&lt;').gsub('>', '&gt;')
   _respond("<pushStream id=\"familiar\" ifClosedStyle=\"watching\"/>[raffle] #{safe}\n<popStream/>\n")
+end
+
+def odds_message(tickets)
+  percent = ([PRIZES, tickets].min * 100.0 / tickets).round
+  one_in = [(tickets.to_f / PRIZES).round, 1].max
+  "#{tickets} tickets in this drawing. Your odds of a prize: about 1 in #{one_in} (#{percent}%), " \
+    "and 1 in #{tickets} for the Grand."
 end
 
 # Puts your ticket somewhere. If it isn't in your hands, gets it out of your
@@ -94,6 +107,21 @@ prize = nil
 won = []
 claimed = false
 
+# Counts every ticket torn off while picks are open. A hook sees every line,
+# including the ones DRC.bput swallows while it waits for a response.
+count = { open: false, seen_open: false, tickets: 0 }
+DownstreamHook.add(COUNT_HOOK, proc do |server_string|
+  text = server_string.gsub(/<[^>]*>/, '')
+  if text =~ PICKS_OPEN
+    count.merge!(open: true, seen_open: true, tickets: 0)
+  elsif text =~ DRAWING_STARTED
+    count[:open] = false
+  end
+  count[:tickets] += text.scan(TORE_TICKET).size if count[:open]
+  server_string
+end)
+before_dying { DownstreamHook.remove(COUNT_HOOK) }
+
 to_familiar("Watching the raffle for #{name}.")
 echo "raffle-watch started for #{name}. Results go to the Familiar window."
 
@@ -108,7 +136,10 @@ loop do
     prize = nil
     won = []
     claimed = false
-    to_familiar(line) if entered
+    if entered
+      to_familiar(line)
+      to_familiar(odds_message(count[:tickets])) if count[:seen_open] && count[:tickets].positive?
+    end
   when PRIZE_CALLED
     prize = Regexp.last_match(1)
   when NAME_ON_BOARD
