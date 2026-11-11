@@ -23,19 +23,21 @@
 
   ;stash writes down what each thing is for, so you can get back part of it.
   Crafting materials (ingots, deeds, cloth and the like) are heavy, so they
-  only come back when you ask for materials, or for everything, or for one
-  discipline with ;unstash crafting <discipline>.
+  only come back when you ask for materials, or for everything.
 
   ;unstash crafting <discipline> is for t2: each crafting block starts with
   it and ends with ;stash crafting <discipline>, so the work orders have
-  their logbook, tools and materials (enchanting's sigil-scrolls) even when a
-  hunt was stopped before it got the crafting gear back (2026-11-11: both
-  Enchanting blocks failed with the enchanting logbook in the vault).
+  their logbook and tools even when a hunt was stopped before it got the
+  crafting gear back (2026-11-11: both Enchanting blocks failed with the
+  enchanting logbook in the vault). It's the same as ;unstash <discipline>:
+  tools only. Tools and materials stay separate, since carrying the
+  materials too is too much to lug around; rare ones like a massive selatila
+  shard would come along for nothing.
 
   Usage:
     ;unstash                    # everything, materials too
     ;unstash crafting           # all crafting gear, no materials
-    ;unstash crafting forging   # forging gear and its materials (or shaping, enchanting, outfitting, alchemy)
+    ;unstash crafting forging   # the same as ;unstash forging (shaping, enchanting, outfitting, alchemy too): t2's crafting blocks start with it
     ;unstash forging            # just forging gear, no materials
     ;unstash shaping            # just shaping gear, no materials
     ;unstash enchanting         # just enchanting gear, no materials
@@ -229,12 +231,11 @@ end
 
 # groups nil means everything, materials and anything stashed before ;stash
 # wrote down what it's for. Otherwise the entry has to be for one of the
-# groups, and be a material if materials is true, or not one if it's false;
-# materials nil takes both.
+# groups, and be a material if materials is true, or not one if it's false.
 def wanted?(entry, groups, materials)
   return true if groups.nil?
 
-  (entry['for'].to_a & groups).any? && (materials.nil? || material?(entry) == materials)
+  (entry['for'].to_a & groups).any? && material?(entry) == materials
 end
 
 asked_for = Script.current.vars[1].to_s.downcase
@@ -243,8 +244,8 @@ groups, materials = case asked_for
                     when '', 'all' then [nil, nil]
                     when 'crafting'
                       if which.empty? then [CRAFTING, false]
-                      # One discipline's gear and materials, for a t2 crafting block
-                      elsif CRAFTING.include?(which) then [[which], nil]
+                      # One discipline's gear, no materials, for a t2 crafting block
+                      elsif CRAFTING.include?(which) then [[which], false]
                       else
                         DRC.message("unstash: use ;unstash crafting, or ;unstash crafting #{CRAFTING.join(', ')}.")
                         exit

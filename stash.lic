@@ -609,8 +609,8 @@ def show_list(gear, settings)
     DRC.message("stash: in your vault#{" (#{what})" unless what.empty?}: #{names.join(', ')}")
   end
   DRC.message('stash: ;unstash gets it all back. ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting, weapons or extras ' \
-              'gets just that, without materials; ;unstash materials (or ;unstash materials forging) gets the materials; ' \
-              ';unstash crafting forging gets forging gear and materials both.')
+              'gets just that, without materials (;unstash crafting forging is the same as ;unstash forging); ' \
+              ';unstash materials (or ;unstash materials forging) gets the materials.')
 end
 
 settings = get_settings
