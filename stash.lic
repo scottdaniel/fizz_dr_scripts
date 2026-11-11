@@ -7,6 +7,7 @@
 
   Usage:
     ;stash crafting        # forging, shaping, enchanting, outfitting and alchemy gear and materials
+    ;stash crafting forging    # the same as ;stash forging (shaping, enchanting, outfitting, alchemy too): t2's crafting blocks end with it
     ;stash forging         # just forging gear and materials
     ;stash shaping         # just shaping gear and materials
     ;stash enchanting      # just enchanting gear and materials
@@ -29,9 +30,14 @@
   Crafting materials are whatever LOOK IN shows in your crafting_container
   and storage_containers that MATERIALS below says a discipline uses: ingots,
   bars and ore for forging, lumber, deeds, bone stacks and stone for shaping,
-  beads for enchanting, leather, cloth and dyes for outfitting, and so on.
-  Every one gets stashed, from whichever container it's in. A weapon harness
-  isn't looked in: only weapons are tied to it.
+  beads and metal shards for enchanting, leather, cloth and dyes for
+  outfitting, and so on. Every one gets stashed, from whichever container
+  it's in. A weapon harness isn't looked in: only weapons are tied to it.
+
+  Except the working stock: burlap cloth, rat-pelt leather, wool yarn, cotton
+  thread and coal nuggets stay with you. taskmaster marathon and workorders
+  use what's in your bag before buying more, so stashing them only made the
+  scripts buy them again (WORKING_STOCK below).
 
   Weapons are the ones named in your yaml's weapon_training. Each comes out
   of wherever your yaml's gear list says it's kept, the way combat-trainer
@@ -93,16 +99,20 @@ SUPPLIES = {
 # ;stash crafting does all of these
 DISCIPLINES = SUPPLIES.keys.freeze
 
+# The sizes ore and metal pieces come in, from Elanthipedia's Mining page
+ORE_SIZES = '(?:tiny|small|medium|large|huge|massive|enormous|gargantuan)'
+
 # What each discipline crafts from, matched against the item names LOOK IN
-# shows ("huge pewter bar", "heavy wool cloth"). Every match gets stashed.
+# shows ("huge pewter bar", "heavy wool cloth"). Every match gets stashed,
+# except WORKING_STOCK.
 MATERIALS = {
   'forging'    => {
     'ingots'     => /\bingot$/i,
     'nuggets'    => /\bnugget$/i,
     'metal bars' => /\bbar$/i,
-    # Mined ore: a size from Elanthipedia's Mining page, then the metal
-    # ("large muracite fragment", "massive quelium lump")
-    'metal ore'  => /\b(?:tiny|small|medium|large|huge|massive|enormous|gargantuan) \S+ (?:fragment|lump)$/i
+    # Mined ore: a size, then the metal ("large muracite fragment", "massive
+    # quelium lump")
+    'metal ore'  => /\b#{ORE_SIZES} \S+ (?:fragment|lump)$/i
   },
   'shaping'    => {
     'lumber'       => /\blumber$/i,
@@ -116,7 +126,10 @@ MATERIALS = {
   'enchanting' => {
     'sigil-scrolls' => /\bsigil-scroll$/i,
     # A stone, bone or wood bead is a base for trinkets and foci
-    'beads'         => /\bbead$/i
+    'beads'         => /\bbead$/i,
+    # A metal by its size, like forging's ore: "massive selatila shard", a
+    # taskmaster reward, which ;stash materials missed (2026-11-10)
+    'metal shards'  => /\b#{ORE_SIZES} \S+ shard$/i
   },
   'outfitting' => {
     'leather' => /\bleather$/i,
@@ -130,6 +143,16 @@ MATERIALS = {
   # Herbs stay in your remedy_container
   'alchemy'    => {}
 }.freeze
+
+# Stock the crafting scripts buy for themselves and use from your bag before
+# buying more, so it stays with you: taskmaster marathon tops up burlap
+# cloth, rat-pelt leather, wool yarn and cotton thread to what it carries,
+# workorders sews and knits from the burlap and yarn already in the bag, and
+# taskmaster's remedies rub a coal nugget you carry before buying one. In the
+# vault each was bought again, and the vault filled up with partial stacks
+# (2026-11-10: three of wool yarn, two of each of the rest).
+WORKING_STOCK = ['burlap cloth', 'rat-pelt leather', 'wool yarn', 'cotton thread', 'coal nugget'].freeze
+WORKING_STOCK_PATTERN = /\b(?:#{WORKING_STOCK.map { |name| Regexp.escape(name) }.join('|')})$/i
 
 # storage_containers that can't hold materials, so aren't looked in
 NOT_LOOKED_IN = /\bharness\b/i
@@ -313,6 +336,8 @@ def find_materials(disciplines, settings)
   containers.reject! { |container| container =~ NOT_LOOKED_IN }
   containers.flat_map do |container|
     DRCI.get_item_list(container, 'look').to_a.filter_map do |name|
+      next if name =~ WORKING_STOCK_PATTERN
+
       used_for = material_uses(name)
       [name.split.last(2).join(' '), used_for, container, name] if (used_for & disciplines).any?
     end
@@ -566,6 +591,7 @@ def show_list(gear, settings)
     DRC.message("stash: #{discipline} (;stash #{discipline}): #{tools.empty? ? 'no gear' : tools.join(', ')}" \
                 "#{", plus any #{materials.join(', ')}" unless materials.empty?}")
   end
+  DRC.message("stash: left with you for the marathon and work orders: #{WORKING_STOCK.join(', ')}")
   weapons = settings.weapon_training.to_h.values.compact.uniq
   DRC.message("stash: weapons (;stash weapons): #{weapons.empty? ? 'none' : weapons.join(', ')}")
   extras = load_extras
@@ -583,7 +609,8 @@ def show_list(gear, settings)
     DRC.message("stash: in your vault#{" (#{what})" unless what.empty?}: #{names.join(', ')}")
   end
   DRC.message('stash: ;unstash gets it all back. ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting, weapons or extras ' \
-              'gets just that, without materials; ;unstash materials (or ;unstash materials forging) gets the materials.')
+              'gets just that, without materials; ;unstash materials (or ;unstash materials forging) gets the materials; ' \
+              ';unstash crafting forging gets forging gear and materials both.')
 end
 
 settings = get_settings
@@ -593,7 +620,15 @@ gear = crafting_gear(settings)
 
 case command
 when 'crafting'
-  stash_items(gear, {}, settings, DISCIPLINES)
+  if item.empty?
+    stash_items(gear, {}, settings, DISCIPLINES)
+  # One discipline, the same as ;stash <discipline>: t2's crafting blocks
+  # start with ;unstash crafting <discipline> and end with this
+  elsif DISCIPLINES.include?(item)
+    stash_items(gear_for([item], gear), {}, settings, [item])
+  else
+    DRC.message("stash: use ;stash crafting, or ;stash crafting #{DISCIPLINES.join(', ')}.")
+  end
 when *DISCIPLINES
   stash_items(gear_for([command], gear), {}, settings, [command])
 when 'materials', 'material'
