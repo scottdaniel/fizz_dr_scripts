@@ -11,9 +11,10 @@
     3) creature capture, e.g. "Marine creatures are loose on Andreshlew Island! ...",
        with a reminder to ;capture-critter hollow_eve to join in, and
        "All of the creatures have been captured!" or "...have been caught!" when it's over
-  It also posts when the game connection drops, since you'll miss announcements
-  until you log back in (not when you EXIT or QUIT, close Saga, idle out, or log
-  in somewhere else). That message is sent by a separate process that keeps
+  It also posts when the game connection drops, even in the middle of a hunt,
+  since you'll miss announcements until you log back in (not when you EXIT or
+  QUIT, a script like 2hourquit or afk exits for you, you close Saga, idle out,
+  or log in somewhere else). That message is sent by a separate process that keeps
   trying every 30 seconds for up to an hour, in case it was your internet that
   dropped.
   Every message starts with the character's name, so one webhook can serve all
@@ -98,12 +99,20 @@ module AnnounceMonitor
   DROPS       = %i[game_timeout connection_reset connection_pipe connection_aborted
                    connection_tls_error websocket_protocol_error game_stream_desync].freeze
   # The game closing the connection (:game_eof) is also how a script's EXIT, an idle logout
-  # and logging in somewhere else end, so it only counts when the game had gone quiet first
-  # (Lich waits for 100 seconds of silence before it checks the connection)...
-  STALL       = 60
-  # ...and not within 15 minutes of one of these
+  # and logging in somewhere else end. Those count as leaving on purpose; any other close
+  # is a drop, even in the middle of a fight. It used to count only after a minute of
+  # silence from the game, which missed the drop at 12:01:55 on 2026-11-12: DR and
+  # GemStone both closed within a second, mid-hunt, with the Wi-Fi up the whole time.
+  # Leaving on purpose is an idle logout or a login elsewhere in the last 15 minutes...
   LEAVING     = /\AInvalid login key|YOU HAVE BEEN IDLE TOO LONG/
   LEAVE_FOR   = 900
+  # ...or an EXIT or QUIT among the last commands sent. Lich marks the ones you type
+  # (:user_exit), but a script's fput('exit') (2hourquit, afk, combat-trainer at low
+  # health, hunting-buddy) only shows up as "[afk]>exit" in $_CLIENTBUFFER_, and the game
+  # says nothing before it closes. Scripts stopping during the shutdown send a few
+  # commands of their own after it ("release BOTF"), so look back further than one.
+  EXIT_SENT   = /\A(?:\[[^\]]+\]\S?)?\s*(?:<c>)?\s*(?:exit|quit)\s*\z/i
+  EXIT_WITHIN = 25
   RETRY_EVERY = 30     # the alert keeps trying this often...
   RETRY_FOR   = 3600   # ...for this long, in case it was your internet that dropped
 
@@ -190,7 +199,12 @@ module AnnounceMonitor
     return true if DROPS.include?(reason)
     return false unless reason == :game_eof
     leaving = @leaving_at && now - @leaving_at < LEAVE_FOR
-    !leaving && (@heard.nil? || now - @heard >= STALL)
+    !leaving && !exit_sent?
+  end
+
+  # Whether you or a script sent EXIT or QUIT just before the game closed
+  def self.exit_sent?
+    $_CLIENTBUFFER_.to_a.last(EXIT_WITHIN).any? { |cmd| cmd.to_s.strip.match?(EXIT_SENT) }
   end
 
   # before_dying: on a dropped connection, tell Discord you're no longer getting announcements
