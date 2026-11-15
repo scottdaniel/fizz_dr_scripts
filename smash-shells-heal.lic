@@ -16,6 +16,7 @@
     - a hand that's bleeding, even bandaged (the shell box says to clean
       your hands until it's healed)
     - the shell box says you're too injured to play
+    - a clawed shell bites your hand when you grab it
 
   Scars don't count: the healer can't take them, so they'd cause endless trips.
 
@@ -45,6 +46,14 @@ RESTOCK_BELOW = 3
 
 # Times in a row the shell box can turn you away before the script gives up
 MAX_TURNED_AWAY = 2
+
+# Some shells have claws that bite your hand when you grab them (about 1 in
+# 12). Other people's bites read "Claws emerge from the opening of the shell".
+CLAW_BITE = 'claws emerge from its opening'
+
+# ;healer checks you're in the room before healing, and Azaylea's list of
+# who's here takes a moment to catch up after you walk in
+ARRIVAL_PAUSE = 2
 
 HANDS = ['right hand', 'left hand'].freeze
 
@@ -128,6 +137,7 @@ def get_healed
   DRC.message("*** Wounded! Heading to #{HEALER} for healing ***")
   waitrt?
   DRCT.walk_to(HEAL_ROOM)
+  pause ARRIVAL_PAUSE
 
   MAX_HEAL_ATTEMPTS.times do
     unless healer_here?
@@ -169,7 +179,15 @@ loop do
   DRCT.walk_to(16_236)
   until checkright || checkleft
     DRC.fix_standing
-    case DRC.bput('grab box', 'roundtime', 'You are too injured', 'Perhaps that would work better', 'when you have enough coins', 'You should clean your hands')
+    case DRC.bput('grab box', 'roundtime', CLAW_BITE, 'You are too injured', 'Perhaps that would work better', 'when you have enough coins', 'You should clean your hands')
+    when CLAW_BITE
+      # The box took your coins and gave you a shell, so this isn't being
+      # turned away. The bite always leaves a hand bleeding, so heal now
+      # rather than wait for the box to say so.
+      turned_away = 0
+      waitrt?
+      get_healed
+      DRCT.walk_to(16_236)
     when 'You are too injured', 'You should clean your hands'
       turned_away += 1
       if turned_away > MAX_TURNED_AWAY
