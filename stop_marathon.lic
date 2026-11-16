@@ -1,0 +1,40 @@
+=begin
+  stop_marathon.lic
+
+  Ends a running ;taskmaster marathon after its next hand-in, instead of in
+  the middle of a task.
+
+  It sets taskmaster's own wrap-up flag, the one saying "Finish your tasks."
+  sets, without saying anything aloud. Taskmaster only looks at that flag
+  right after a task is handed in and its reward sack sorted, so the task
+  being worked now is finished and turned in first. Then taskmaster stops
+  (after picking up repaired tools, if task_get_tools_on_completion is set).
+  It ends ;taskmaster <npc> repeat or cycle the same way.
+
+  Usage:
+    ;stop_marathon          # stop after the next hand-in
+    ;stop_marathon cancel   # changed your mind: keep the marathon going
+=end
+
+flag = 'wrap-up'
+
+unless Script.running?('taskmaster')
+  echo 'taskmaster is not running, so there is no marathon to stop.'
+  exit
+end
+
+# taskmaster adds the flag when it starts and deletes it when it ends.
+if Flags[flag].nil?
+  echo "taskmaster is running but has no #{flag} flag (an old copy, or it is still starting). Try again in a moment, or say \"Finish your tasks.\""
+  exit
+end
+
+if Script.current.vars[1].to_s.casecmp?('cancel')
+  Flags.reset(flag)
+  echo 'OK: taskmaster keeps going after its next hand-in.'
+elsif Flags[flag]
+  echo 'Already set: taskmaster stops after its next hand-in. (;stop_marathon cancel to keep it going.)'
+else
+  Flags[flag] = true
+  echo 'OK: taskmaster stops after its next hand-in, once the reward sack is sorted. (;stop_marathon cancel to keep it going.)'
+end
