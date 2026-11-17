@@ -38,13 +38,17 @@
     - Each stand sells only 10, so name the one you want most first. In
       2026 all three stands were empty about 20 seconds after the curtain
       came down.
-    - Since the 11-08 sale the stands are displays: LOOK ON STAND says "I
-      could not find what you were referring to". LT looks on the display
-      first and falls back to the stand. If it can't find either, ;LT third
-      buys what the clerk is handing other people ("The sales clerk hands
-      Teko a ... safos ..." => BUY SAFOS).
+    - Since the 11-08 sale LOOK ON STAND says "I could not find what you were
+      referring to" (and on 11-16 so did LOOK ON THIRD DISPLAY). LT tries
+      LOOK ON THIRD DISPLAY, then LOOK ON DISPLAY (one display holding
+      everything, where ;LT third means its third item), then LOOK ON
+      THIRD STAND. If none works, ;LT third buys what the clerk is handing
+      other people ("The sales clerk hands Teko a ... safos ..." => BUY SAFOS).
+    - LT already waiting? Starting it again does nothing ("already
+      running"). ;kill LT first, then start it with the new item.
     - Each family can buy 5 from a stand. Bring plenty: the 2026 kimono was
-      3,750,000 Kronars (375 platinum).
+      3,750,000 Kronars (375 platinum), and the 11-16 mask was 10,189,042
+      (about 1,019 platinum: 1,000 platinum was 19 short).
 =end
 
 no_pause_all
@@ -95,9 +99,13 @@ module LimitedTreasures
   # "On the silversteel stand you see a ... and a ...", or a shop list:
   # "On the silversteel stand, you see:" followed by indented "  a ... for 10 platinum Kronars" lines
   STAND_CONTENTS = /^#{PROMPT}On (?:the|a|an) [^,:]*?,? you see:?\s*(.*)$/
-  # What the stands are called, tried in this order. Since 11-08 they're
-  # displays (Lycette checked); the first sales on 11-06 used stands.
-  STAND_NOUNS    = %w[display stand].freeze
+  # Where the items might be, tried in this order: [noun, one display for all?]
+  #   "third display"  three displays (Lycette says they're displays now)
+  #   "display"        one display holding everything; ;LT third buys its third item
+  #   "third stand"    the 11-06 sales
+  # On 11-08 and 11-16 neither "third display" nor "third stand" was found.
+  LOOK_PLAN      = [['display', false], ['display', true], ['stand', false]].freeze
+  ORDINALS       = ['', 'second', 'third'].freeze
   # "There is nothing on there."
   STAND_EMPTY    = /^#{PROMPT}(?:There(?: is|'s)|You see|You don't see) nothing\b/i
   STAND_MISSING  = /^#{PROMPT}(?:What were you referring to|I could not find)\b/
@@ -128,7 +136,7 @@ module LimitedTreasures
   SOLD_TO_OTHER = /\AThe sales clerk hands (?!you\b)[A-Z][\w'-]* ((?:a|an|some) .+?)\.?\z/
   SALES_HOOK    = 'LT_sales'.freeze
   @sold = []
-  @stand_noun = nil
+  @surface = nil # the LOOK_PLAN entry that worked
   @no_stands = false
   # What follows a participle like "capturing an ..." or "flaunting a ..."
   DETERMINERS = /\A(?:a|an|the|some|its|his|her|their|two|three|four|five|several|many|numerous|\d+)\z/i
@@ -311,41 +319,58 @@ module LimitedTreasures
     if items.nil?
       bought, said, name = buy_what_others_got
       label = name && "#{name} (what others were buying; #{problem})"
-      return [bought, bought ? said : "#{problem}; #{said}", label]
+      return [bought, bought || label ? said : "#{problem}; #{said}", label]
     end
     return [false, "nothing on the #{stand}", nil] if items.empty?
 
-    names = buy_names(items.first)
-    said = "can't tell what to BUY for #{items.first}"
+    # One display holding everything: ;LT third means its third item
+    # (or the last one, if fewer are left)
+    item = items.first
+    where = stand
+    if single_display?
+      item = items[ORDINALS.index(stand.sub(/\s*stand\z/, '')).to_i] || items.last
+      where = 'display'
+    end
+
+    names = buy_names(item)
+    said = "can't tell what to BUY for #{item}"
     names.each do |name|
       bought, said = buy(name)
-      return [true, said, "#{name} (#{stand})"] if bought
+      return [true, said, "#{name} (#{where})"] if bought
       # Only "Buy what?" means try the plainer name; money or a limit won't change
       break unless said =~ /\ABuy what\?/
     end
-    [false, "#{said} (it's #{items.first})", names.first && "#{names.first} (#{stand})"]
+    [false, "#{said} (it's #{item})", names.first && "#{names.first} (#{where})"]
   end
 
   # What's on a stand: [items, nil] (no items if it's empty) or [nil, why not].
-  # Tries each of STAND_NOUNS ("third display", then "third stand") and
+  # Goes down LOOK_PLAN ("third display", "display", "third stand") and
   # remembers the one that worked.
   def stand_items(stand)
+    return [nil, "can't find the displays or stands"] if @no_stands
+
     ordinal = stand.sub(/\s*stand\z/, '')
     tried = []
-    nouns = @stand_noun ? [@stand_noun] : STAND_NOUNS
-    nouns = [] if @no_stands
-    nouns.each do |noun|
-      target = [ordinal, noun].reject(&:empty?).join(' ')
+    (@surface ? [@surface] : LOOK_PLAN).each do |noun, single|
+      target = single ? noun : [ordinal, noun].reject(&:empty?).join(' ')
+      # For the first stand, "display" is both the first display and the only one
+      next if tried.include?(target)
+
       items, problem = look_once(target)
       if problem == :missing
         tried << target
         next
       end
-      @stand_noun = noun if problem.nil?
+      @surface = [noun, single] if problem.nil?
       return [items, problem]
     end
-    @no_stands = true unless @stand_noun
-    [nil, tried.empty? ? "can't find the stands" : "no #{tried.join(' or ')} here"]
+    @no_stands = true unless @surface
+    [nil, "no #{tried.join(' or ')} here"]
+  end
+
+  # Did the items turn out to be on one display?
+  def single_display?
+    @surface ? @surface[1] : false
   end
 
   # One LOOK ON: [items, nil], [nil, :missing] or [nil, why not]
@@ -398,7 +423,16 @@ module LimitedTreasures
 
   def look_at_stands
     STANDS.each do |label, stand|
-      DRC.message("LT: #{label} stand: #{look_on(stand)}")
+      seen = look_on(stand)
+      if @no_stands
+        DRC.message("LT: Nothing to look at: #{seen}")
+        return
+      end
+      if single_display?
+        DRC.message("LT: Display: #{seen}")
+        return
+      end
+      DRC.message("LT: #{label} stand: #{seen}")
     end
   end
 end
