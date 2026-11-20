@@ -72,7 +72,7 @@ DEFAULT_EXTRAS = %w[codex textbook contract].freeze
 # Crafting gear besides each discipline's tools from your yaml
 SUPPLIES = {
   'forging' => [
-    'weapon.book', # book of apprentice weaponsmithing instructions
+    'weapon.book', # book of journeyman weaponsmithing instructions (since 11/20/2026)
     'forging logbook',
     'oil', # flask of oil
     'flux' # borax flux

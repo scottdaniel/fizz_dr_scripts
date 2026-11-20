@@ -1,0 +1,138 @@
+=begin
+  read-book.lic
+
+  Reads a crafting instruction book from cover to cover: the table of
+  contents, then every chapter it lists. The book's text shows in the game
+  window as usual, and the chapter lists are saved to
+  data/<game>/<character>/book-<discipline>-<difficulty>.yaml (for example
+  book-weaponsmithing-journeyman.yaml). That file is what workorder_recipes
+  gets rebuilt from when a character changes books.
+
+  It reads only the chapter lists, not every page: what each recipe needs
+  (volume, parts) is already in base-recipes.yaml.
+
+  Hold the book when you start it (a book you just bought is already in your
+  hand). Or name it, and it does GET MY <name> BOOK first and puts the book
+  away again at the end. With two books of the same name in your pack, hold
+  the one you mean instead.
+
+  Usage:
+    ;read-book
+    ;read-book weaponsmithing
+=end
+
+require 'yaml'
+require 'fileutils'
+
+TOC_START = /-=\s+Table of Contents\s+=-/
+TOC_CHAPTER = /^\s*Chapter (\d+): (.+?)\s*$/
+TOC_DIFFICULTY = /Instructions for crafting items of the (.+?) Discipline with (\w+) difficulty/
+# The game lists pages in two columns, so a line can hold two of them.
+PAGE_ENTRY = /Page (\d+):\s*(.+?)(?=\s{2,}Page \d+:|\s*$)/
+BLANK_CHAPTER = /This chapter is intentionally left blank/
+DISTRACTED = /too distracted/i
+ENTITIES = { '&gt;' => '>', '&lt;' => '<', '&amp;' => '&', '&quot;' => '"', '&apos;' => "'" }.freeze
+
+# A line of game XML as plain text.
+def plain(line)
+  line.gsub(/<[^>]*>/, '').gsub(/&(?:gt|lt|amp|quot|apos);/, ENTITIES).rstrip
+end
+
+# READ MY BOOK, returning the text from the line that matches +start+ up to
+# the next prompt.
+def read_book(start)
+  lines = Lich::Util.issue_command('read my book', start, /<prompt/, timeout: 10, usexml: true)
+  (lines || []).map { |line| plain(line) }
+end
+
+# The chapters a table of contents lists, as { number => title }.
+def toc_chapters(lines)
+  lines.each_with_object({}) do |line, chapters|
+    chapters[Regexp.last_match(1).to_i] = Regexp.last_match(2) if line =~ TOC_CHAPTER
+  end
+end
+
+# The recipes a chapter lists, as { page => name }.
+def chapter_pages(lines)
+  lines.each_with_object({}) do |line, pages|
+    line.scan(PAGE_ENTRY) { |page, name| pages[page.to_i] = name }
+  end
+end
+
+def held_book
+  [GameObj.right_hand, GameObj.left_hand].find { |obj| obj&.noun == 'book' }
+end
+
+wanted = Script.current.vars[0].to_s.strip
+settings = get_settings
+got_book = false
+
+before_dying do
+  DRCI.put_away_item?('book', settings.crafting_container) if got_book
+end
+
+unless held_book
+  if wanted.empty?
+    DRC.message('read-book: hold the book first, or name it: ;read-book weaponsmithing')
+    exit
+  end
+  result = DRC.bput("get my #{wanted} book", /^You get/, /^You pick up/, /^What were you referring to/, /^You need a free hand/)
+  unless result =~ /^You (?:get|pick up)/
+    DRC.message("read-book: couldn't get your #{wanted} book.")
+    exit
+  end
+  got_book = true
+end
+
+book_name = held_book&.name || "#{wanted} book"
+
+if DRC.bput('turn my book to index', /back to the index/, /already/i, DISTRACTED) =~ DISTRACTED
+  DRC.message("read-book: too distracted to turn pages. Try again when you're out of combat.")
+  exit
+end
+toc = read_book(TOC_START)
+chapters = toc_chapters(toc)
+if chapters.empty?
+  DRC.message("read-book: couldn't read the table of contents of your #{book_name}.")
+  exit
+end
+discipline, difficulty = toc.join("\n").match(TOC_DIFFICULTY)&.captures || %w[unknown unknown]
+
+book = {
+  'book'       => book_name,
+  'discipline' => discipline,
+  'difficulty' => difficulty,
+  'read'       => Time.now.strftime('%Y-%m-%d %H:%M'),
+  'chapters'   => {}
+}
+
+chapters.each do |number, title|
+  turned = DRC.bput("turn my book to chapter #{number}", /^You turn your .* to chapter/, /^The .* is already turned to chapter/, /does not have a chapter/, DISTRACTED)
+  if turned =~ DISTRACTED
+    DRC.message("read-book: too distracted to turn pages, stopped at chapter #{number}.")
+    break
+  end
+
+  text = read_book(/-=\s+Chapter #{number} :/)
+  chapter = { 'title' => title, 'pages' => chapter_pages(text) }
+  chapter['blank'] = true if text.any? { |line| line =~ BLANK_CHAPTER }
+  book['chapters'][number] = chapter
+end
+
+slug = [discipline, difficulty].map { |word| word.downcase.tr(' ', '-') }.join('-')
+file = File.join(DATA_DIR, XMLData.game, Char.name, "book-#{slug}.yaml")
+FileUtils.mkdir_p(File.dirname(file))
+File.write(file, book.to_yaml)
+
+book['chapters'].each do |number, chapter|
+  status = if chapter['blank']
+             'blank'
+           elsif chapter['pages'].empty?
+             'nothing read, try that chapter again'
+           else
+             "#{chapter['pages'].size} pages"
+           end
+  DRC.message("read-book: chapter #{number}, #{chapter['title']}: #{status}")
+end
+total = book['chapters'].values.sum { |chapter| chapter['pages'].size }
+DRC.message("read-book: #{total} pages from #{book['chapters'].size} of #{chapters.size} chapters saved to #{file}")
