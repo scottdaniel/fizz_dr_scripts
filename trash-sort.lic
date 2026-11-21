@@ -1,0 +1,325 @@
+=begin
+  trash-sort.lic
+
+  Clears the cheap things out of your vault. Walks to your hometown's
+  Carousel and opens the vault the way ;stash does, then takes each thing out
+  of the vault in turn and APPRAISEs it:
+    - under 10,000 Kronars: down the vault's garbage chute
+    - anything else: back in the vault
+  Every value is written down in Lich's data/DR/<character>/trash-sort.yaml.
+
+  It leaves you in the vault chamber with the vault open, because the chute
+  holds what's thrown in until you leave the chamber ("A flap prevents it
+  from falling all the way down until you leave the chamber"). Check the
+  chute for anything you still want, put it back in the vault, then CLOSE
+  VAULT and leave.
+
+  Never thrown out, and not even picked up:
+    - anything ;stash put in the vault (its stash.yaml list): your crafting
+      tools, materials, weapons and extras
+    - crafting things: the tools in your yaml's *_tools, and anything whose
+      name ends in a crafting word (ingot, bar, lump, shard, lumber, deed,
+      stack, stone, bead, leather, cloth, yarn, thread, dye, instructions,
+      book, logbook, fount ...) -- CRAFTING_WORDS below
+    - anything the sorter files under crafting, material, stacker, trainer,
+      container or box (base-sorting.yaml), like the vault's large shelf
+  And kept after APPRAISE:
+    - containers ("The dark gem pouch is a container."), which may hold
+      something
+    - anything APPRAISE doesn't give an exact Kronar figure for: "worth
+      exactly nothing" (memory orbs appraise like that, 2026-11-21), "probably
+      worth around several thousand", or a value in another currency
+
+  Things with the same name are taken one at a time, so each is appraised.
+  Once one is kept, the rest of that name are kept too, as the next GET might
+  only find the same one again.
+
+  Usage:
+    ;trash-sort
+=end
+
+# What APPRAISE has to say for something to go down the chute
+TRASH_UNDER = 10_000
+
+# What ;stash put in the vault
+STASH_LIST = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
+# Every value APPRAISE gave, by name
+VALUES = File.join(DATA_DIR, XMLData.game, Char.name, 'trash-sort.yaml')
+
+# A name ending in one of these is something used in crafting (the
+# materials ;stash knows, plus books, instructions and supplies)
+CRAFTING_WORDS = /\b(?:ingots?|nuggets?|bars?|lumps?|fragments?|shards?|ore|lumber|logs?|limbs?|branch(?:es)?|deeds?|
+                     stacks?|stones?|rocks?|boulders?|beads?|sigil-scrolls?|leathers?|pelts?|hides?|skins?|cloth|yarn|
+                     thread|dyes?|instructions|book|logbook|fount|flux|oil)$/xi
+# The sorter's categories (base-sorting.yaml) that mean crafting or keeping
+PROTECTED_CATEGORIES = /\A(?:crafting|material|stacker|trainer|container|box)\b/i
+
+# Getting in and out of the vault: the same steps and messages as ;stash
+ARCHES = ['go blackwood arch', 'go ironwood arch', 'go rosewood arch'].freeze
+ARCH_IN = /escorts you through/
+RENT_DUE = /\brent\b/i
+ARCH_RESTRICTED = /access to that arch is restricted/
+ARCH_BUSY = /is using that booth|blocks|someone|using|Sorry/
+LEVER_PULLED = /door pops open/
+VAULT_OPENED = [/^The vault opens/, /already open/i].freeze
+CHAMBER = /Chamber/
+
+# bput returns only the matched text, so these run to the end of the line
+VAULT_LIST = /^In the .* you see .*/
+VAULT_EMPTY = /^There is nothing in there/
+GET_SUCCESS = [/^You get .*/, /^You pick up .*/].freeze
+NOT_FOUND = [/^What were you referring to/, /^I could not find/, /^I don't know what you are referring to/].freeze
+APPRAISED = [/\bis a container\./, /\bworth\b.*/].freeze
+APPRAISE_FAILED = [/^Appraise what/, /^You can't appraise/].freeze
+KRONARS = /\bworth (?:exactly|about|around) ([\d,]+) Kronars\b/
+# "You drop a steel ingot into the garbage chute.  A flap prevents it from
+# falling all the way down until you leave the chamber." (2026-11-10)
+CHUTE_DROPPED = /^You drop .* into the garbage chute/
+PUT_SUCCESS = /^You put .*/
+
+def hands_empty?
+  DRC.right_hand.nil? && DRC.left_hand.nil?
+end
+
+# The hand display and room title can lag the game text by a moment
+def settle
+  10.times do
+    return true if yield
+
+    pause 0.1
+  end
+  false
+end
+
+def in_chamber?
+  [XMLData.room_title, XMLData.room_name].any? { |title| title.to_s =~ CHAMBER }
+end
+
+# Walks to the hometown's Carousel and opens your vault, as ;stash does.
+# Remembers how far it got in @vault_steps. Says why and returns false if it
+# can't.
+def open_vault(settings)
+  @vault_steps = []
+  room = get_data('town')[settings.hometown]&.dig('vault', 'id')
+  unless room
+    DRC.message("trash-sort: no vault listed for your hometown, #{settings.hometown}.")
+    return false
+  end
+  unless DRCT.walk_to(room)
+    DRC.message("trash-sort: couldn't walk to the Carousel (room #{room}).")
+    return false
+  end
+  return false unless enter_booth
+
+  unless DRC.bput('pull lever', LEVER_PULLED, *NOT_FOUND, /^You can't/) =~ LEVER_PULLED
+    DRC.message("trash-sort: pulling the lever didn't open the door.")
+    return false
+  end
+
+  DRC.bput('go door', /.+/)
+  unless settle { in_chamber? }
+    DRC.message("trash-sort: GO DOOR didn't reach the Carousel Chamber. Room: #{XMLData.room_title.inspect}")
+    return false
+  end
+  @vault_steps << :chamber
+
+  result = DRC.bput('open vault', *VAULT_OPENED, RENT_DUE, *NOT_FOUND, /^You can't/)
+  unless VAULT_OPENED.any? { |pattern| result =~ pattern }
+    DRC.message("trash-sort: the vault didn't open: #{result.empty? ? 'no reply' : result}")
+    return false
+  end
+  @vault_steps << :open
+  true
+end
+
+# Through the first arch whose booth is free, waiting a while if all are in use
+def enter_booth
+  6.times do
+    ARCHES.each do |arch|
+      result = DRC.bput(arch, ARCH_IN, RENT_DUE, ARCH_RESTRICTED, ARCH_BUSY, *NOT_FOUND)
+      if result =~ ARCH_IN
+        @vault_steps << :booth
+        return true
+      end
+      if result =~ RENT_DUE
+        DRC.message('trash-sort: vault rent is due. Pay it at the Carousel desk (GO DESK), then try again.')
+        return false
+      end
+      if NOT_FOUND.any? { |pattern| result =~ pattern }
+        DRC.message("trash-sort: there's no #{arch.split[1]} arch here, so stopping.")
+        return false
+      end
+    end
+    DRC.message('trash-sort: every booth is busy. Waiting 10 seconds.')
+    pause 10
+  end
+  DRC.message('trash-sort: gave up waiting for a free booth.')
+  false
+end
+
+# Back out to the Carousel, as far as open_vault got. Only when the vault
+# never opened: once it's open you stay, to check the chute.
+def back_out
+  steps = @vault_steps.to_a
+  DRC.bput('go door', /.+/) if steps.include?(:chamber)
+  DRC.bput('go arch', /door slams closed/, /.+/) if steps.include?(:booth)
+end
+
+# What's in the vault, by the names LOOK IN shows: "In the secure vault you
+# see a large shelf, some heavy wool cloth and a massive selatila shard."
+def vault_contents
+  result = DRC.bput('look in vault', VAULT_LIST, VAULT_EMPTY, *NOT_FOUND)
+  return [] unless result =~ VAULT_LIST
+
+  result.sub(/^In the .*? you see (?:some|an|a) /, '').sub(/\.\z/, '')
+        .split(/(?:,|\band) (?:some|an|a) /).map(&:strip).reject(&:empty?)
+end
+
+# Why something mustn't be thrown out without even picking it up, or nil
+def protected_reason(name, stashed, tools, sorting)
+  return 'stashed by ;stash' if stashed.include?(name.downcase)
+  return 'a crafting tool' if tools.any? { |tool| (tool.downcase.split - name.downcase.split).empty? }
+  return 'used in crafting' if name =~ CRAFTING_WORDS
+
+  category = sorting.find { |_category, pattern| name =~ pattern }&.first
+  "sorted as #{category}" if category
+end
+
+# The sorter's protected categories, as [category, pattern] like sorter.lic
+# builds them ("pattern" ends each entry with $)
+def protected_sorting
+  get_data('sorting').to_h.filter_map do |key, entries|
+    category = key.to_s.sub(/_nouns|_types/, '')
+    next unless category =~ PROTECTED_CATEGORIES && entries.is_a?(Array) && !entries.empty?
+
+    [category, /(?:#{entries.join('$|')}$)/i]
+  end
+end
+
+# The crafting tools named in your yaml
+def crafting_tools(settings)
+  %w[forging shaping enchanting outfitting alchemy].flat_map { |discipline| settings.send("#{discipline}_tools").to_a }
+end
+
+# The ways to ask the vault for a name: the last two words, each other word
+# with the noun, then the noun alone (as ;unstash does)
+def addresses_for(name)
+  words = name.split
+  noun = words.last
+  ([words.last(2).join(' ')] + words[0...-1].reverse.map { |word| "#{word} #{noun}" } + [noun]).uniq
+end
+
+# The GET line names this exact thing ("You get some heavy wool cloth from
+# inside a secure vault.")
+def right_item?(result, name)
+  result =~ /^You (?:get|pick up) (?:a|an|some|the|your) #{Regexp.escape(name)} (?:from|off)\b/i
+end
+
+# Gets one of these out of the vault. Returns true with it in hand, false
+# if none answers to any of its names. Something else that answers goes back.
+def take_out(name)
+  addresses_for(name).each do |address|
+    result = DRC.bput("get #{address} from vault", *GET_SUCCESS, *NOT_FOUND, /^You need a free hand/)
+    next unless GET_SUCCESS.any? { |pattern| result =~ pattern } && settle { !hands_empty? }
+    return true if right_item?(result, name)
+
+    put_in_vault(name.split.last)
+  end
+  false
+end
+
+# Back in the vault. Stops the script if it's still in your hand.
+def put_in_vault(noun)
+  return if DRC.bput("put my #{noun} in vault", PUT_SUCCESS, *NOT_FOUND, /no room/i, /^You can't/) =~ PUT_SUCCESS && settle { hands_empty? }
+
+  DRC.message("trash-sort: couldn't put the #{noun} back in the vault. It's still in your hand, so stopping.")
+  exit
+end
+
+def into_chute?(noun)
+  DRC.bput("put my #{noun} in chute", CHUTE_DROPPED, *NOT_FOUND, /^You can't/) =~ CHUTE_DROPPED && settle { hands_empty? }
+end
+
+# What APPRAISE says the thing in hand is worth: [Kronars or nil, what it said]
+def appraise(noun)
+  result = DRC.bput("appraise my #{noun}", *APPRAISED, *APPRAISE_FAILED)
+  waitrt?
+  return [nil, 'a container'] if result =~ /is a container/
+  return [nil, result.empty? ? 'no answer' : result] unless result =~ KRONARS
+
+  [Regexp.last_match(1).delete(',').to_i, result]
+end
+
+# 25000 as "25,000"
+def with_commas(number)
+  number.to_s.reverse.scan(/\d{1,3}/).join(',').reverse
+end
+
+def load_yaml(path, default)
+  File.exist?(path) ? YAML.safe_load(File.read(path)) || default : default
+end
+
+unless hands_empty?
+  DRC.message('trash-sort: empty your hands first.')
+  exit
+end
+
+settings = get_settings
+stashed = load_yaml(STASH_LIST, []).filter_map { |entry| entry['name']&.downcase }
+tools = crafting_tools(settings)
+sorting = protected_sorting
+values = load_yaml(VALUES, {})
+trashed = []
+kept = []
+protected = []
+skipped = []
+
+unless open_vault(settings)
+  back_out
+  exit
+end
+
+vault_contents.tally.each do |name, count|
+  reason = protected_reason(name, stashed, tools, sorting)
+  if reason
+    protected << "#{name} (#{reason})"
+    next
+  end
+
+  noun = name.split.last
+  count.times do
+    unless take_out(name)
+      skipped << name
+      break
+    end
+
+    value, said = appraise(noun)
+    values[name] = { 'value' => value || said, 'appraised' => Time.now.strftime('%Y-%m-%d %H:%M') }
+    if value && value < TRASH_UNDER && into_chute?(noun)
+      trashed << "#{name} (#{with_commas(value)})"
+      values[name]['result'] = 'thrown out'
+      next
+    end
+
+    put_in_vault(noun)
+    values[name]['result'] = 'kept'
+    kept << "#{name} (#{value ? with_commas(value) : said})"
+    # The next GET might only find this one again, so the rest are kept too
+    break
+  end
+end
+
+FileUtils.mkdir_p(File.dirname(VALUES))
+File.write(VALUES, values.to_yaml)
+
+DRC.message("trash-sort: kept, worth 10K or more or no exact figure: #{kept.join(', ')}") unless kept.empty?
+DRC.message("trash-sort: never touched: #{protected.join(', ')}") unless protected.empty?
+DRC.message("trash-sort: couldn't pick up, left in the vault: #{skipped.uniq.join(', ')}") unless skipped.empty?
+DRC.message("trash-sort: values written to #{VALUES}")
+if trashed.empty?
+  DRC.message('trash-sort: nothing in the vault was worth less than 10K Kronars, so nothing went down the chute.')
+else
+  DRC.message("trash-sort: down the chute: #{trashed.join(', ')}")
+  DRC.message("I've thrown out items under 10K kronars, check the chute for anything you still want to keep!")
+  DRC.message("trash-sort: you're still in the vault chamber with the vault open. The chute empties when you leave, so CLOSE VAULT and go once you've checked it.")
+end
