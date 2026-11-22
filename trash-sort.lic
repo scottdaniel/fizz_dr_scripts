@@ -400,8 +400,9 @@ end
 # whatever it hands over. Something put back goes in first, so the next
 # ordinal reaches the next one; something thrown out lets the next one move
 # up. It stops once the listed names it's for are all sorted out. Returns
-# true if it ran out of ordinals before that.
-def walk(address, names)
+# true if it ran out of ordinals before that. (Not called walk: Lich's own
+# walk, which wanders out a random exit, wins over a script's, 2026-11-22.)
+def ask_vault(address, names)
   noun = address.split.last
   at = 0
   while names.any? { |name| @pending[name].positive? }
@@ -464,10 +465,10 @@ def sort_out_vault
   end
 
   @pending.keys.group_by { |name| noun_of(name) }.each do |noun, names|
-    next unless walk(noun, names)
+    next unless ask_vault(noun, names)
 
     names.select { |name| @pending[name].positive? }.group_by { |name| narrow_address(name) }.each do |address, narrow|
-      walk(address, narrow) if address
+      ask_vault(address, narrow) if address
     end
   end
   @pending.each { |name, count| count.times { @skipped << name } }
@@ -509,6 +510,10 @@ settings = get_settings
 @kept = []
 @protected = Hash.new { |hash, reason| hash[reason] = [] }
 @skipped = []
+# Lich keeps a script's instance variables from one run to the next, so
+# these start over too
+@stash_changed = false
+@said_look = false
 
 unless open_vault(settings)
   back_out
