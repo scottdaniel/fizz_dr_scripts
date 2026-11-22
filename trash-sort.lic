@@ -32,7 +32,9 @@
 
   Never thrown out, and not even picked up:
     - crafting tools and supplies: your yaml's *_tools, what ;stash put in the
-      vault as tools, and books, logbooks, instructions, oil, flux and founts
+      vault as tools, and books, logbooks, instructions, oil, flux, founts and
+      sigil-scrolls (APPRAISE says 62 Kronars for what the shop sells at 625,
+      so they'd all go down the chute, 2026-11-22)
     - your weapons and gear (the yaml's weapon_training and gear)
     - the stock ;unstash marathon gets out for ;taskmaster marathon: burlap
       cloth, rat-pelt leather, wool yarn and cotton thread
@@ -40,7 +42,7 @@
       or box (base-sorting.yaml), like the vault's large shelf
   Crafting materials aren't tools, so they're appraised like everything else:
   ingots, nuggets, bars, lumps, fragments, shards, deeds, stacks, stones,
-  beads, sigil-scrolls, leather, cloth, yarn, thread and dyes (except the four
+  beads, leather, cloth, yarn, thread and dyes (except the four
   marathon stocks; a cleaning, chamois or polishing cloth is a tool).
   And kept after APPRAISE:
     - containers ("The dark gem pouch is a container."), which may hold
@@ -66,12 +68,14 @@ VALUES = File.join(DATA_DIR, XMLData.game, Char.name, 'trash-sort.yaml')
 # Crafting materials: not tools, so appraised like anything else. Matched on
 # the name up to its noun, "deed" in "deed for a large pumice rock".
 MATERIALS = /\b(?:ingots?|nuggets?|bars?|lumps?|fragments?|shards?|ore|lumber|logs?|limbs?|branch(?:es)?|deeds?|
-               stacks?|stones?|pebbles?|rocks?|boulders?|beads?|sigil-scrolls?|leathers?|pelts?|hides?|skins?|cloth|
+               stacks?|stones?|pebbles?|rocks?|boulders?|beads?|leathers?|pelts?|hides?|skins?|cloth|
                yarn|thread|dyes?)$/xi
 # Cloths that are tools, not materials
 TOOL_CLOTHS = /\b(?:chamois|cleaning|polishing)\b/i
-# Crafting supplies, kept like the tools ("flask of oil", "borax flux")
-SUPPLIES = /\b(?:instructions|book|logbook|fount|flux|oil)$/i
+# Crafting supplies, kept like the tools ("flask of oil", "borax flux").
+# Sigil-scrolls too: APPRAISE says 62 Kronars for what the shop sells at 625,
+# and work orders only buy them again (2026-11-22).
+SUPPLIES = /\b(?:instructions|book|logbook|fount|flux|oil|sigil-scrolls?)$/i
 # What ;unstash marathon gets out for ;taskmaster marathon (unstash.lic's
 # MARATHON_STOCK)
 MARATHON_STOCK = /\b(?:burlap cloth|rat-pelt leather|wool yarn|cotton thread)$/i
