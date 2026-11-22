@@ -1,0 +1,55 @@
+=begin
+  start_marathon.lic
+
+  Starts ;taskmaster marathon with the outfitting tools on hand. If ;stash
+  left any of them in the vault, it runs ;unstash outfitting first (tools
+  only, no stock), and starts taskmaster only once none are left there.
+
+  Why: taskmaster checks the tools before buying for Dorhum's and Nezhiri's
+  tasks, but not Zasele's. On 2026-11-22 the tools were still in the vault
+  from the day before. The marathon bought stock, paid Zasele for a knitted
+  outfit task, and then stopped at sew's first step: "You seem to be
+  missing: knitting needles".
+
+  When nothing for outfitting is stashed, unstash says so and stops at once,
+  so this costs no trip to the vault. Unstash needs empty hands: if yours
+  are full, it says so and this stops before starting taskmaster.
+
+  The marathon alias runs this. Anything after it goes on to taskmaster.
+
+  Usage:
+    ;start_marathon
+=end
+
+require 'yaml'
+
+# What's stashed right now, written by ;stash (the same file ;unstash reads)
+STASH_LIST = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
+
+# The outfitting tools and supplies ;stash left in the vault: what
+# ;unstash outfitting gets back (gear for outfitting, not materials)
+def stashed_outfitting_gear
+  entries = File.exist?(STASH_LIST) ? YAML.safe_load(File.read(STASH_LIST)) || [] : []
+  entries.select { |entry| entry['for'].to_a.include?('outfitting') && entry['kind'] != 'materials' }
+         .map { |entry| entry['item'] || entry['name'] }
+end
+
+if Script.running?('taskmaster')
+  DRC.message('start_marathon: taskmaster is already running.')
+  exit
+end
+
+unless stashed_outfitting_gear.empty?
+  DRC.message("start_marathon: getting the outfitting tools from the vault first: #{stashed_outfitting_gear.join(', ')}")
+  DRC.wait_for_script_to_complete('unstash', ['outfitting'])
+  left = stashed_outfitting_gear
+  unless left.empty?
+    DRC.message("start_marathon: still in the vault: #{left.join(', ')}. Not starting the marathon without them. " \
+                'Run ;unstash outfitting (with empty hands), then marathon again.')
+    exit
+  end
+end
+
+# Started on its own, as if typed, so ;kill taskmaster and ;stop_marathon
+# work on it as usual and this script is done
+start_script('taskmaster', ['marathon', *Script.current.vars[1..]])
