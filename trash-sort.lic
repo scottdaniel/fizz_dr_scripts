@@ -2,7 +2,8 @@
   trash-sort.lic
 
   Clears the cheap things out of your vault. Walks to your hometown's
-  Carousel and opens the vault the way ;stash does, then takes each thing out
+  Carousel and opens the vault the way ;stash does (or starts right there if
+  you're still in the vault chamber or a booth), then takes each thing out
   of the vault in turn and APPRAISEs it:
     - under 10,000 Kronars: down the vault's garbage chute
     - anything else: back in the vault
@@ -87,6 +88,11 @@ ARCH_BUSY = /is using that booth|blocks|someone|using|Sorry/
 LEVER_PULLED = /door pops open/
 VAULT_OPENED = [/^The vault opens/, /already open/i].freeze
 CHAMBER = /Chamber/
+# Where you may be already, as ;trash-sort leaves you. The map doesn't know
+# these rooms, so walking to the Carousel from them fails ("DRCT: Unable to
+# resolve the current room", 2026-11-22).
+CAROUSEL_CHAMBER = /Carousel Chamber/
+CAROUSEL_BOOTH = /Carousel Booth/
 
 # bput returns only the matched text, so these run to the end of the line.
 # RUMMAGE lists the whole vault, as inventory-manager reads it: "You rummage
@@ -134,15 +140,45 @@ def settle
   false
 end
 
-def in_chamber?
-  [XMLData.room_title, XMLData.room_name].any? { |title| title.to_s =~ CHAMBER }
+def in_room?(pattern)
+  [XMLData.room_title, XMLData.room_name].any? { |title| title.to_s =~ pattern }
 end
 
-# Walks to the hometown's Carousel and opens your vault, as ;stash does.
-# Remembers how far it got in @vault_steps. Says why and returns false if it
-# can't.
+def in_chamber?
+  in_room?(CHAMBER)
+end
+
+# Walks to the hometown's Carousel and opens your vault, as ;stash does,
+# starting from the chamber or a booth if you're in one already (as after an
+# earlier run). Remembers how far it got in @vault_steps. Says why and returns
+# false if it can't.
 def open_vault(settings)
   @vault_steps = []
+  if in_room?(CAROUSEL_CHAMBER)
+    # Already in, maybe with the vault open ("That is already open.")
+    @vault_steps.push(:booth, :chamber)
+  else
+    return false unless into_booth(settings)
+    return false unless into_chamber
+  end
+
+  result = DRC.bput('open vault', *VAULT_OPENED, RENT_DUE, *NOT_FOUND, /^You can't/)
+  unless VAULT_OPENED.any? { |pattern| result =~ pattern }
+    DRC.message("trash-sort: the vault didn't open: #{result.empty? ? 'no reply' : result}")
+    return false
+  end
+  @vault_steps << :open
+  true
+end
+
+# To the hometown's Carousel and through an arch, unless you're in a booth
+# already
+def into_booth(settings)
+  if in_room?(CAROUSEL_BOOTH)
+    @vault_steps << :booth
+    return true
+  end
+
   room = get_data('town')[settings.hometown]&.dig('vault', 'id')
   unless room
     DRC.message("trash-sort: no vault listed for your hometown, #{settings.hometown}.")
@@ -152,8 +188,11 @@ def open_vault(settings)
     DRC.message("trash-sort: couldn't walk to the Carousel (room #{room}).")
     return false
   end
-  return false unless enter_booth
+  enter_booth
+end
 
+# From the booth through its door into the vault chamber
+def into_chamber
   unless DRC.bput('pull lever', LEVER_PULLED, *NOT_FOUND, /^You can't/) =~ LEVER_PULLED
     DRC.message("trash-sort: pulling the lever didn't open the door.")
     return false
@@ -165,13 +204,6 @@ def open_vault(settings)
     return false
   end
   @vault_steps << :chamber
-
-  result = DRC.bput('open vault', *VAULT_OPENED, RENT_DUE, *NOT_FOUND, /^You can't/)
-  unless VAULT_OPENED.any? { |pattern| result =~ pattern }
-    DRC.message("trash-sort: the vault didn't open: #{result.empty? ? 'no reply' : result}")
-    return false
-  end
-  @vault_steps << :open
   true
 end
 
