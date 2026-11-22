@@ -19,9 +19,15 @@
   What's in the vault comes from RUMMAGE VAULT, which lists all of it. LOOK IN
   VAULT stops partway through a full vault with "a lot of other stuff"
   (2026-11-21: it showed 73 things of more than 150), so it's only used if
-  RUMMAGE doesn't answer. If the list ends with "a lot of other stuff", the
-  vault is listed again each time something has gone down the chute, which
-  lets it show more.
+  RUMMAGE doesn't answer.
+
+  Things are taken out by noun, the way you would by hand: "get deed from
+  vault", appraise it, and if it's kept, "get second deed from vault", and so
+  on until the vault has no more deeds. RUMMAGE's long names ("deed for a
+  lelori log") don't work for GET, and sizes don't either ("get tiny bar"
+  fails), but whatever GET hands over gets sorted, so every one is reached.
+  Each copy of a name is appraised: two tiny brass bars appraised at 242 and
+  146.
 
   Never thrown out, and not even picked up:
     - crafting tools and supplies: your yaml's *_tools, what ;stash put in the
@@ -42,7 +48,7 @@
       exactly nothing" (memory orbs appraise like that, 2026-11-21), "probably
       worth around several thousand", or a value in another currency
   Something trash-sort.yaml already has as kept at 10K or more isn't
-  appraised again.
+  appraised again, if it's the only one of its name.
 
   Usage:
     ;trash-sort
@@ -102,6 +108,17 @@ KRONARS = /\bworth (?:exactly|about|around) ([\d,]+) Kronars\b/
 # falling all the way down until you leave the chamber." (2026-11-10)
 CHUTE_DROPPED = /^You drop .* into the garbage chute/
 PUT_SUCCESS = /^You put .*/
+
+# Lich's $ORDINALS: how far "get second deed", "get third deed" ... can count
+ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth
+              fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth twentieth].freeze
+# Words that follow the noun in a long name, as RUMMAGE gives them
+AFTER_NOUN = /\A(?:for|of|with|from|in|on|at|marked|comprised|tipped|sharpened|engraved|carved|shaped|inlaid|
+                wrapped|bearing|featuring|covered|crafted|made|set|trimmed|adorned|embroidered|slung|decorated|
+                painted|etched|studded|bound|lined|edged|depicting|showing|filled|holding|containing|accented|
+                hung|tied|strung)\z/xi
+# "pair of scissors", "handful of time slips": the noun is the last word
+MEASURES = /\A(?:pair|handful|bunch|bundle|piece|bit|scrap|set)\z/i
 
 def hands_empty?
   DRC.right_hand.nil? && DRC.left_hand.nil?
@@ -214,11 +231,23 @@ def vault_contents
         .split(/(?:,|\band) (?:some|an|a) /).map(&:strip).reject(&:empty?)
 end
 
+# The noun GET takes, which in a long name comes before one of these: "deed
+# FOR a lelori log", "contract MARKED with the crest of the Traders' Guild",
+# "flask OF oil", "sigil-scroll COMPRISED of broad strokes"
+def noun_of(name)
+  words = name.split
+  at = (1...words.size).find { |index| words[index] =~ AFTER_NOUN }
+  # "pair of scissors": the noun is the last word
+  return words.last if at.nil? || (words[at - 1] =~ MEASURES && words[at].casecmp?('of'))
+
+  words[at - 1]
+end
+
 # The name up to its noun: "deed" for "deed for a large pumice rock",
 # "intricate paradox sigil-scroll" for "... comprised of broad strokes"
-def short_name(name, noun)
+def short_name(name)
   words = name.split
-  at = noun && words.index { |word| word.casecmp?(noun) }
+  at = words.index(noun_of(name))
   at ? words[0..at].join(' ') : name
 end
 
@@ -233,8 +262,8 @@ def named?(name, names)
 end
 
 # Why something mustn't be thrown out without even picking it up, or nil
-def protected_reason(name, noun)
-  short = short_name(name, noun)
+def protected_reason(name)
+  short = short_name(name)
   names = [name, short].uniq
   return 'for ;taskmaster marathon' if names.any? { |each| each =~ MARATHON_STOCK }
   return 'a weapon or gear' if named?(name, @gear)
@@ -282,12 +311,20 @@ def stashed_tools(list)
   end
 end
 
-# The ways to ask the vault for a name: the last two words, each other word
-# with the noun, then the noun alone (as ;unstash does)
-def addresses_for(name, noun)
-  words = short_name(name, noun).split
-  noun = words.last
-  ([words.last(2).join(' ')] + words[0...-1].reverse.map { |word| "#{word} #{noun}" } + [noun]).uniq
+# A narrower way to ask for it than the noun alone: the word before the noun
+# ("brass bar"), or a deed's wood or stone ("lelori deed", as APPRAISE calls
+# a deed for a lelori log). nil if there isn't one. Sizes like "tiny" don't
+# work for GET, so it's the word next to the noun.
+def narrow_address(name)
+  noun = noun_of(name)
+  words = name.split
+  at = words.index(noun)
+  word = if at.positive?
+           words[at - 1]
+         elsif words[at + 1].to_s.casecmp?('for') && words.size > at + 3
+           words[-2]
+         end
+  word && "#{word} #{noun}"
 end
 
 # What GET handed over: "You get a concise contract marked with the crest of
@@ -305,21 +342,6 @@ def right_item?(got, name)
   return true if got.casecmp?(name) || got.downcase.start_with?("#{name.downcase} ")
 
   (name.downcase.split - got.downcase.split).empty?
-end
-
-# Gets one of these out of the vault by its names. Returns the name GET gave
-# with it in hand, or nil. Something else that answers to a name goes back.
-def take_out(name)
-  addresses_for(name, nil).each do |address|
-    result = DRC.bput("get #{address} from vault", *GET_SUCCESS, *NOT_FOUND, *GET_REFUSED)
-    next unless GET_SUCCESS.any? { |pattern| result =~ pattern } && settle { !hands_empty? }
-
-    got = got_name(result)
-    return got || name if right_item?(got, name)
-
-    put_in_vault(address.split.last)
-  end
-  nil
 end
 
 # Back in the vault. Stops the script if it's still in your hand.
@@ -359,35 +381,52 @@ def forget_stashed(name)
   @stash_changed = true
 end
 
-# Sorts out one thing in the vault, by the name the vault lists it under.
-# Returns :thrown, :kept, :protected or :skipped.
-def sort_out(name)
-  reason = protected_reason(name, nil)
-  if reason
-    @protected[reason] << name
-    return :protected
-  end
-  if kept_before?(name)
-    @kept << "#{name} (#{with_commas(@values[name]['value'])}, appraised before)"
-    return :kept
-  end
+# Something to appraise: not protected, and not the only one of its name that
+# an earlier run already kept at 10K or more. Two of a name can be worth
+# different amounts (tiny brass bars at 242 and 146, 2026-11-21), so a name
+# with copies gets each one appraised.
+def fair_game?(name)
+  protected_reason(name).nil? && !(kept_before?(name) && @copies[name] <= 1)
+end
 
-  got = take_out(name)
-  unless got
-    @skipped << name
-    return :skipped
-  end
+# Which listed name this is that's still to be sorted out, if any
+def pending_name(got)
+  live = @pending.select { |_name, count| count.positive? }.keys
+  live.find { |name| name.casecmp?(got) } || live.select { |name| right_item?(got, name) }.max_by(&:length)
+end
 
-  noun = name.split.last
-  # GET can hand over a longer-named thing ("thin electroweave cloth" for
-  # "electroweave cloth"): that one has to be fair game too
-  reason = protected_reason(got, noun)
-  if reason
+# Asks the vault for this again and again, the way you would by hand ("get
+# deed from vault", then "get second deed from vault" ...), sorting out
+# whatever it hands over. Something put back goes in first, so the next
+# ordinal reaches the next one; something thrown out lets the next one move
+# up. It stops once the listed names it's for are all sorted out. Returns
+# true if it ran out of ordinals before that.
+def walk(address, names)
+  noun = address.split.last
+  at = 0
+  while names.any? { |name| @pending[name].positive? }
+    return true if at >= ORDINALS.size
+
+    asked = at.zero? ? address : "#{ORDINALS[at]} #{address}"
+    result = DRC.bput("get #{asked} from vault", *GET_SUCCESS, *NOT_FOUND, *GET_REFUSED)
+    return false unless GET_SUCCESS.any? { |pattern| result =~ pattern } && settle { !hands_empty? }
+
+    at += 1 unless sort_in_hand(got_name(result), noun) == :thrown
+  end
+  false
+end
+
+# Appraises what GET just handed over and throws it down the chute or puts it
+# back. Something protected, or already kept, goes straight back. Returns
+# :thrown, :kept or :back.
+def sort_in_hand(got, noun)
+  unless got && fair_game?(got)
     put_in_vault(noun)
-    @protected[reason] << got
-    return :protected
+    return :back
   end
 
+  listed = pending_name(got)
+  @pending[listed] -= 1 if listed
   value, said = appraise(noun)
   @values[got] = { 'value' => value || said, 'appraised' => Time.now.strftime('%Y-%m-%d %H:%M') }
   if value && value < TRASH_UNDER && into_chute?(noun)
@@ -403,30 +442,36 @@ def sort_out(name)
   :kept
 end
 
-# Sorts out everything the vault lists. If the list ends with "a lot of other
-# stuff", it's listed again while things go down the chute, since that lets
-# it show more. Things with the same name are taken one at a time; once one
-# isn't thrown out, the rest of that name are left, as the next GET might
-# only find the same one again. Returns true if the list still ended with "a
-# lot of other stuff".
+# Sorts out everything the vault lists: by each noun ("get bar", "get
+# deed", "get contract"), and if a noun has more than GET's twenty ordinals
+# can reach, by the narrower names of what's left ("brass bar"). Returns true
+# if the list ended with "a lot of other stuff" (LOOK only: things under
+# other nouns may not have been seen).
 def sort_out_vault
-  settled = []
-  loop do
-    names = vault_contents
-    more = names.any? { |name| name =~ CUT_SHORT }
-    threw = false
-    names.reject { |name| name =~ CUT_SHORT || settled.include?(name) }.tally.each do |name, count|
-      count.times do
-        result = sort_out(name)
-        threw ||= result == :thrown
-        next if result == :thrown
-
-        settled << name
-        break
-      end
+  names = vault_contents
+  cut_short = names.any? { |name| name =~ CUT_SHORT }
+  @copies = Hash.new(0).merge(names.reject { |name| name =~ CUT_SHORT }.tally)
+  @pending = Hash.new(0)
+  @copies.each do |name, count|
+    reason = protected_reason(name)
+    if reason
+      count.times { @protected[reason] << name }
+    elsif kept_before?(name) && count == 1
+      @kept << "#{name} (#{with_commas(@values[name]['value'])}, appraised before)"
+    else
+      @pending[name] = count
     end
-    return more unless more && threw
   end
+
+  @pending.keys.group_by { |name| noun_of(name) }.each do |noun, names|
+    next unless walk(noun, names)
+
+    names.select { |name| @pending[name].positive? }.group_by { |name| narrow_address(name) }.each do |address, narrow|
+      walk(address, narrow) if address
+    end
+  end
+  @pending.each { |name, count| count.times { @skipped << name } }
+  cut_short
 end
 
 # 25000 as "25,000"
@@ -481,8 +526,11 @@ DRC.message("trash-sort: kept, worth 10K or more or no exact figure: #{@kept.joi
   listed = names.tally.map { |name, count| count > 1 ? "#{name} (#{count})" : name }
   DRC.message("trash-sort: never touched, #{reason}: #{listed.join(', ')}")
 end
-DRC.message("trash-sort: couldn't pick up, left in the vault: #{@skipped.uniq.join(', ')}") unless @skipped.empty?
-DRC.message("trash-sort: the vault's list still ends with \"a lot of other stuff\", so some of it wasn't looked at.") if cut_short
+unless @skipped.empty?
+  missed = @skipped.tally.map { |name, count| count > 1 ? "#{name} (#{count})" : name }
+  DRC.message("trash-sort: couldn't pick up, left in the vault: #{missed.join(', ')}")
+end
+DRC.message("trash-sort: LOOK IN VAULT ended with \"a lot of other stuff\", so things under other nouns may not have been looked at.") if cut_short
 DRC.message("trash-sort: values written to #{VALUES}")
 DRC.message('trash-sort: took what went down the chute off the stash list.') if @stash_changed
 if @trashed.empty?
