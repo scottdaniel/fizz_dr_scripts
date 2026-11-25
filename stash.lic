@@ -33,6 +33,7 @@
   beads and metal shards for enchanting, leather, cloth and dyes for
   outfitting, and so on. Every one gets stashed, from whichever container
   it's in. A weapon harness isn't looked in: only weapons are tied to it.
+  Sigil-scrolls stay with you, for the next artificing order to use.
 
   Except coal nuggets: they go down the vault's garbage chute instead (TRASH
   below). remedy and taskmaster buy one whenever none is on hand, and the
@@ -124,8 +125,11 @@ MATERIALS = {
     # runestone, which have no word break before "stone".
     'stones'       => /\b(?:pebble|stone|small rock|large rock|boulder)$/i
   },
+  # Not sigil-scrolls: artificing orders use the ones in your bag before buying
+  # more, and ;unstash enchanting would leave stashed ones in the vault. They'd
+  # been put back by accident since 2026-11-18 (GET's name for one ends in
+  # "comprised of broad strokes"); the user asked to keep it so (2026-11-25).
   'enchanting' => {
-    'sigil-scrolls' => /\bsigil-scroll$/i,
     # A stone, bone or wood bead is a base for trinkets and foci
     'beads'         => /\bbead$/i,
     # A metal by its size, like forging's ore: "massive selatila shard", a
@@ -161,6 +165,12 @@ TRASH_PATTERN = /\b(?:#{TRASH.map { |name| Regexp.escape(name) }.join('|')})$/i
 # "You drop a steel ingot into the garbage chute.  A flap prevents it from
 # falling all the way down until you leave the chamber." (2026-11-10)
 CHUTE_DROPPED = [/^You drop .* into the garbage chute/].freeze
+
+# A deed's name is different in GET and in LOOK: what LOOK lists as "log
+# lelori deed", GET calls "a deed for a thick lelori log". The check that GET
+# took a material (2026-11-18) only knew LOOK's, so it put every lumber deed
+# and most stone deeds back (found 2026-11-25).
+DEED_FOR = /\Adeed for (?:an?|some) (?:.+ )?(\S+) (\S+)\z/i
 
 # storage_containers that can't hold materials, so aren't looked in
 NOT_LOOKED_IN = /\bharness\b/i
@@ -407,10 +417,16 @@ def material_addresses(item, seen_as)
   ([item] + words[0...-1].reverse.map { |word| "#{word} #{noun}" } + [noun]).uniq
 end
 
+# A name GET gave, the way LOOK shows it, for MATERIALS to match: only deeds
+# differ
+def look_name(name)
+  name.to_s.sub(DEED_FOR, '\2 \1 deed')
+end
+
 # Whether a name GET gave is a material these disciplines use: a looser name
 # ("cloth") can pick up the chamois cloth
 def stashable_material?(name, disciplines)
-  !name.nil? && (material_uses(name) & disciplines).any?
+  (material_uses(look_name(name)) & disciplines).any?
 end
 
 # Drops what's in hand down the vault's garbage chute
@@ -514,14 +530,14 @@ def stash_items(gear, extras, settings, material_disciplines = [])
         case put_in_vault(address)
         when :put
           put << (seen_as && name ? name : address)
-          taken << name.to_s.downcase
+          taken << look_name(name).downcase
           # A copy of used_for each time: two codices sharing one array would
           # be written as a YAML alias, which safe_load refuses to read back.
           # A material is for what its own name says, and ;unstash asks for it
           # by its own last two words first ("titanese cloth", not the "thin
           # cloth" that found it), as a looser name may have found another one.
-          uses = seen_as ? material_uses(name) : used_for.dup
-          address_for_unstash = seen_as && name ? name.split.last(2).join(' ') : vault_address(address, name)
+          uses = seen_as ? material_uses(look_name(name)) : used_for.dup
+          address_for_unstash = seen_as && name ? look_name(name).split.last(2).join(' ') : vault_address(address, name)
           entry = { 'item' => address_for_unstash, 'name' => name, 'from' => from, 'for' => uses }
           # ;unstash crafting leaves these in the vault; ;unstash materials gets them
           entry['kind'] = 'materials' if seen_as

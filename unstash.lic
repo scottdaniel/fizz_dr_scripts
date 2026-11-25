@@ -247,8 +247,12 @@ end
 # if it finds nothing they're gone. The bare noun would find a rare leather
 # or cloth instead, and the entry would stay on the list for good (6 rat-pelt
 # leathers listed with 3 in the vault, 2026-11-25).
+#
+# A deed is just what it was stashed as ("lelori deed"), which GET takes. Its
+# full name is "deed for a lelori log", so the last word isn't its noun, and
+# asking for a LOG could find a logbook and keep a deed that's gone listed.
 def vault_addresses(item, name)
-  return [item] if name.nil? || (item == name && name.match?(MARATHON_STOCK))
+  return [item] if name.nil? || name.match?(/\Adeed for /i) || (item == name && name.match?(MARATHON_STOCK))
 
   words = name.split
   noun = words.last
