@@ -88,7 +88,7 @@ SUPPLIES = {
   ],
   # Bought 11/9/2026
   'outfitting' => [
-    'tailoring book', # book of apprentice tailoring instructions
+    'tailoring book', # book of journeyman tailoring instructions (since 11/25/2026)
     'outfitting logbook'
   ],
   # Bought 11/9/2026. remedy.lic gets the book as "remed book".
