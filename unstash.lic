@@ -242,8 +242,13 @@ end
 # 11-09). And a cloth stashed as THIN CLOTH ("thin Imperial weave cloth",
 # 2026-11-18) can find another thin cloth first. The name check in fetch makes
 # sure what comes out is ours.
+#
+# The marathon's four stocks are just their full names: GET takes those, so
+# if it finds nothing they're gone. The bare noun would find a rare leather
+# or cloth instead, and the entry would stay on the list for good (6 rat-pelt
+# leathers listed with 3 in the vault, 2026-11-25).
 def vault_addresses(item, name)
-  return [item] if name.nil?
+  return [item] if name.nil? || (item == name && name.match?(MARATHON_STOCK))
 
   words = name.split
   noun = words.last

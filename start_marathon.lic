@@ -1,21 +1,33 @@
 =begin
   start_marathon.lic
 
-  Starts ;taskmaster marathon with the outfitting tools on hand. If ;stash
-  left any of them in the vault, it runs ;unstash outfitting first (tools
-  only, no stock), and starts taskmaster only once none are left there.
+  Starts ;taskmaster marathon with the outfitting tools, and the stock you
+  already have, on hand. If ;stash left any of either in the vault, it runs
+  ;unstash marathon first: the outfitting tools, plus the burlap cloth,
+  rat-pelt leather, wool yarn and cotton thread the marathon sews and knits
+  from (not your rare cloths and leathers). It starts taskmaster only once
+  none of the tools are left there. Stock that couldn't be got back doesn't
+  stop it, since taskmaster buys whatever it's short of.
 
-  Why: taskmaster checks the tools before buying for Dorhum's and Nezhiri's
-  tasks, but not Zasele's. On 2026-11-22 the tools were still in the vault
-  from the day before. The marathon bought stock, paid Zasele for a knitted
-  outfit task, and then stopped at sew's first step: "You seem to be
+  Then it combines the pieces of each stock in your crafting_container into
+  one. taskmaster tops up cloth and leather to 100 yards and yarn and thread
+  to 400, but COUNTs only one piece of each, so nine loose yarns would count
+  as one and it would buy more. (2026-11-25: 9 wool yarn, 3 cotton thread, 3
+  rat-pelt leather and 3 burlap cloth had piled up in the vault.)
+
+  Why the tools: taskmaster checks them before buying for Dorhum's and
+  Nezhiri's tasks, but not Zasele's. On 2026-11-22 the tools were still in
+  the vault from the day before. The marathon bought stock, paid Zasele for a
+  knitted outfit task, and then stopped at sew's first step: "You seem to be
   missing: knitting needles".
 
-  When nothing for outfitting is stashed, unstash says so and stops at once,
-  so this costs no trip to the vault. Unstash needs empty hands: if yours
-  are full, it says so and this stops before starting taskmaster.
+  When nothing for the marathon is stashed there's no trip to the vault.
+  Unstash needs empty hands: if yours are full and tools are stashed, it says
+  so and this stops before starting taskmaster. With your hands full it
+  doesn't combine anything either.
 
   The marathon alias runs this. Anything after it goes on to taskmaster.
+  Typing ;taskmaster marathon yourself skips all this.
 
   Usage:
     ;start_marathon
@@ -26,12 +38,103 @@ require 'yaml'
 # What's stashed right now, written by ;stash (the same file ;unstash reads)
 STASH_LIST = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
 
-# The outfitting tools and supplies ;stash left in the vault: what
-# ;unstash outfitting gets back (gear for outfitting, not materials)
-def stashed_outfitting_gear
+# The stock the marathon sews and knits from (the same as unstash.lic's)
+MARATHON_STOCK = /\b(?:burlap cloth|rat-pelt leather|wool yarn|cotton thread)$/i
+
+# That stock as taskmaster and sew ask for it
+MARATHON_PIECES = ['burlap cloth', 'rat leather', 'wool yarn', 'cotton thread'].freeze
+
+# Pieces of one stock combined at most, so an odd reply can't keep it going
+MARATHON_MOST_PIECES = 40
+
+# COMBINE: "You combine the spools of thread together." (yarn too), "You must
+# be holding both substances to combine them.", "Those items cannot be
+# combined."
+MARATHON_COMBINED = /^You combine/
+MARATHON_NOT_COMBINED = [/^You must/, /cannot be combined/, /^You can't/, /^What were you referring to/, /too (?:big|large|much|many)/i].freeze
+
+# The other scripts' methods are shared with this one while they run (see
+# trash-sort's ask_vault), so none of these are named like ;unstash's.
+
+# What ;unstash marathon gets back: the outfitting tools and supplies, and
+# the marathon's stock
+def stashed_for_marathon
   entries = File.exist?(STASH_LIST) ? YAML.safe_load(File.read(STASH_LIST)) || [] : []
-  entries.select { |entry| entry['for'].to_a.include?('outfitting') && entry['kind'] != 'materials' }
-         .map { |entry| entry['item'] || entry['name'] }
+  entries.select do |entry|
+    entry['for'].to_a.include?('outfitting') && (entry['kind'] != 'materials' || entry['name'].to_s.match?(MARATHON_STOCK))
+  end
+end
+
+# Just the tools and supplies, which the marathon can't start without
+def stashed_outfitting_gear
+  stashed_for_marathon.reject { |entry| entry['kind'] == 'materials' }
+end
+
+# "knitting needles, wool yarn (9)"
+def list_stashed(entries)
+  entries.map { |entry| entry['item'] || entry['name'] }.tally
+         .map { |name, count| count > 1 ? "#{name} (#{count})" : name }.join(', ')
+end
+
+def marathon_hands
+  [DRC.right_hand, DRC.left_hand].compact.size
+end
+
+# The hand display can lag the game text by a moment
+def marathon_holding?(count)
+  10.times do
+    return true if marathon_hands == count
+
+    pause 0.1
+  end
+  false
+end
+
+# Takes one more piece of a stock out of the bag. The hands tell whether it
+# came: get_item? would take the piece already held for it.
+def take_piece?(stock, bag)
+  held = marathon_hands
+  DRC.bput("get my #{stock} from my #{bag}", /^You get/, /^What were you referring to/, /^I could not find/, /^You need a free hand/, /^You can't/) =~ /^You get/ &&
+    marathon_holding?(held + 1)
+end
+
+# Combines a stock's pieces in the bag into one. Returns how many it put
+# together, 0 if there weren't two, or nil if one is stuck in your hands.
+def combine_pieces(stock, bag)
+  return 0 unless take_piece?(stock, bag)
+
+  pieces = 1
+  while pieces < MARATHON_MOST_PIECES && take_piece?(stock, bag)
+    reply = DRC.bput("combine #{stock.split.last}", MARATHON_COMBINED, *MARATHON_NOT_COMBINED)
+    unless reply =~ MARATHON_COMBINED && marathon_holding?(1)
+      DRC.message("start_marathon: couldn't combine the #{stock}: #{reply.empty? ? 'no reply' : reply}")
+      break
+    end
+    pieces += 1
+  end
+  2.times { DRCI.put_away_item?(stock, bag) unless marathon_hands.zero? }
+  return nil unless marathon_holding?(0)
+
+  pieces > 1 ? pieces : 0
+end
+
+# Combines all four stocks. Returns false if a piece is stuck in your hands.
+def combine_marathon_stock(bag)
+  return true unless marathon_hands.zero?
+
+  combined = {}
+  MARATHON_PIECES.each do |stock|
+    pieces = combine_pieces(stock, bag)
+    if pieces.nil?
+      DRC.message("start_marathon: couldn't put the #{stock} back in your #{bag}. Not starting the marathon with it in your hands.")
+      return false
+    end
+    combined[stock] = pieces if pieces.positive?
+  end
+  unless combined.empty?
+    DRC.message("start_marathon: combined into one each: #{combined.map { |stock, pieces| "#{stock} (#{pieces} pieces)" }.join(', ')}")
+  end
+  true
 end
 
 if Script.running?('taskmaster')
@@ -39,15 +142,30 @@ if Script.running?('taskmaster')
   exit
 end
 
-unless stashed_outfitting_gear.empty?
-  DRC.message("start_marathon: getting the outfitting tools from the vault first: #{stashed_outfitting_gear.join(', ')}")
-  DRC.wait_for_script_to_complete('unstash', ['outfitting'])
-  left = stashed_outfitting_gear
-  unless left.empty?
-    DRC.message("start_marathon: still in the vault: #{left.join(', ')}. Not starting the marathon without them. " \
+bag = get_settings.crafting_container
+stashed = stashed_for_marathon
+if stashed.empty?
+  exit unless combine_marathon_stock(bag)
+else
+  # A second time only if the first got some and left some, as when the bag
+  # fills up: combining the pieces makes room
+  2.times do
+    DRC.message("start_marathon: getting these from the vault first: #{list_stashed(stashed)}")
+    DRC.wait_for_script_to_complete('unstash', ['marathon'])
+    exit unless combine_marathon_stock(bag)
+
+    left = stashed_for_marathon
+    some = left.size < stashed.size
+    stashed = left
+    break if stashed.empty? || !some
+  end
+  tools = stashed_outfitting_gear
+  unless tools.empty?
+    DRC.message("start_marathon: still in the vault: #{list_stashed(tools)}. Not starting the marathon without them. " \
                 'Run ;unstash outfitting (with empty hands), then marathon again.')
     exit
   end
+  DRC.message("start_marathon: still in the vault, so taskmaster buys what it's short of: #{list_stashed(stashed)}") unless stashed.empty?
 end
 
 # Started on its own, as if typed, so ;kill taskmaster and ;stop_marathon
