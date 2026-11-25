@@ -2,23 +2,24 @@
   LT.lic - Limited Treasures
 
   Buys from Gortik's Limited Treasures shop the moment the sale opens, then
-  looks at all three silversteel stands and echoes what's on them. Lich
-  version of Lycette's Genie scripts limited, limited1, limited2 and limited3.
+  looks at all three desks and echoes what's on them. Lich version of Lycette's Genie scripts limited, limited1, limited2 and limited3.
 
   Start it in the Limited Treasures lounge (the room with a silversteel door
   and a door curtained with deathfiber) before Gortik opens the sale. When the
   deathfiber curtain powers down, or a customer goes through the curtained
   door, it pauses your other scripts, goes through the curtained door, buys
-  what you named in the order you named it, looks at the stands, and
+  what you named in the order you named it, looks at the desks, and
   unpauses your scripts. That's the fastest way in: start it any time
   before the sale and it goes the instant the curtain comes down.
 
   Usage:
-    ;LT                          just go in and look at the stands
+    ;LT                          just go in and look at the desks
     ;LT mask greatcoat bookbag   buy these, in this order
     ;LT "half mask" greatcoat    quote (or comma-separate) names with spaces
-    ;LT third                    buy whatever is on the third stand (or
+    ;LT third                    buy whatever is on the third desk (or
                                  first, second); mix them: ;LT kimono third
+    ;LT third table              same, if they've become tables: say what
+                                 they are and it looks there first
     ;LT now mask greatcoat       only if the sale is already open (you got
                                  there late): go in and buy right away.
                                  Before the curtain comes down, this walks
@@ -35,18 +36,18 @@
       before the next buy.
     - It never buys the rock. Gortik: GET the rock to check how much your
       family has bought this year; he won't refund it if you buy it.
-    - Each stand sells only 10, so name the one you want most first. In
-      2026 all three stands were empty about 20 seconds after the curtain
+    - Each desk sells only 10, so name the one you want most first. In
+      2026 all three were empty about 20 seconds after the curtain
       came down.
-    - Since the 11-08 sale LOOK ON STAND says "I could not find what you were
-      referring to" (and on 11-16 so did LOOK ON THIRD DISPLAY). LT tries
-      LOOK ON THIRD DISPLAY, then LOOK ON DISPLAY (one display holding
-      everything, where ;LT third means its third item), then LOOK ON
-      THIRD STAND. If none works, ;LT third buys what the clerk is handing
-      other people ("The sales clerk hands Teko a ... safos ..." => BUY SAFOS).
+    - Gortik keeps changing what the items sit on: stands on 11-06, displays
+      (reportedly) from 11-08 and desks on 11-24. LT
+      looks on the third desk, then display, then stand, then a lone desk
+      (where third means its third item). If none of those is there, ;LT
+      third buys what the clerk is handing other people ("The sales clerk
+      hands Teko a ... safos ..." => BUY SAFOS).
     - LT already waiting? Starting it again does nothing ("already
       running"). ;kill LT first, then start it with the new item.
-    - Each family can buy 5 from a stand. Bring plenty: the 2026 kimono was
+    - Each family can buy 5 during the festival. Bring plenty: the 2026 kimono was
       3,750,000 Kronars (375 platinum), and the 11-16 mask was 10,189,042
       (about 1,019 platinum: 1,000 platinum was 19 short).
 =end
@@ -99,12 +100,10 @@ module LimitedTreasures
   # "On the silversteel stand you see a ... and a ...", or a shop list:
   # "On the silversteel stand, you see:" followed by indented "  a ... for 10 platinum Kronars" lines
   STAND_CONTENTS = /^#{PROMPT}On (?:the|a|an) [^,:]*?,? you see:?\s*(.*)$/
-  # Where the items might be, tried in this order: [noun, one display for all?]
-  #   "third display"  three displays (Lycette says they're displays now)
-  #   "display"        one display holding everything; ;LT third buys its third item
-  #   "third stand"    the 11-06 sales
-  # On 11-08 and 11-16 neither "third display" nor "third stand" was found.
-  LOOK_PLAN      = [['display', false], ['display', true], ['stand', false]].freeze
+  # What the items sit on, newest first; tried in this order
+  SURFACES       = %w[desk display stand].freeze
+  # Others you can name yourself: ;LT third table
+  SURFACE_NAMES  = (SURFACES + %w[table pedestal podium plinth counter shelf rack]).join('|').freeze
   ORDINALS       = ['', 'second', 'third'].freeze
   # "There is nothing on there."
   STAND_EMPTY    = /^#{PROMPT}(?:There(?: is|'s)|You see|You don't see) nothing\b/i
@@ -113,8 +112,9 @@ module LimitedTreasures
   # "a X, a Y and a Z" => each item
   LIST_SPLIT     = /,\s*(?:and\s+)?(?=(?:a|an|some)\s)|\s+and\s+(?=(?:a|an|some)\s)/i
 
-  # ;LT third (or "third stand") buys what's on that stand
-  STAND_PICK = /\A(first|second|third)(?:\s+stand)?\z/i
+  # ;LT third (or "third desk") buys what's on that desk
+  STAND_PICK = /\A(first|second|third)(?:\s+(?:#{SURFACE_NAMES})s?)?\z/i
+  NAMED_PICK = /\b(first|second|third)\s+(#{SURFACE_NAMES})s?\b/i
   # Words that end an item's name: "kimono depicting a ...", "mask embellished with ..."
   LINK_WORDS = %w[
     of with in on from for at by to amid amidst among amongst around about under over
@@ -136,7 +136,8 @@ module LimitedTreasures
   SOLD_TO_OTHER = /\AThe sales clerk hands (?!you\b)[A-Z][\w'-]* ((?:a|an|some) .+?)\.?\z/
   SALES_HOOK    = 'LT_sales'.freeze
   @sold = []
-  @surface = nil # the LOOK_PLAN entry that worked
+  @surfaces = SURFACES
+  @surface = nil # what worked: [noun, is it the only one?]
   @no_stands = false
   # What follows a participle like "capturing an ..." or "flaunting a ..."
   DETERMINERS = /\A(?:a|an|the|some|its|his|her|their|two|three|four|five|several|many|numerous|\d+)\z/i
@@ -151,9 +152,31 @@ module LimitedTreasures
   def parse_args(raw)
     words = raw.to_s.strip
     now = words.match?(/\Anow\b/i)
-    words = words.sub(/\Anow\b,?\s*/i, '').gsub(/\b(first|second|third)\s+stand\b/i, '\1')
+    words = words.sub(/\Anow\b,?\s*/i, '').gsub(NAMED_PICK, '\1')
     items = words.include?(',') ? words.split(',') : words.scan(/"([^"]*)"|(\S+)/).map { |quoted, word| quoted || word }
     [now, items.map { |item| item.delete('"').strip }.reject(&:empty?)]
+  end
+
+  # ";LT third table" means look on tables before anything else
+  def name_surface(raw)
+    named = raw.to_s.match(NAMED_PICK)
+    @surfaces = [named[2].downcase, *SURFACES].uniq if named
+  end
+
+  # What to call them in messages: the one that worked, or the likeliest
+  def surface_noun
+    (@surface || @surfaces).first
+  end
+
+  # "third stand" => "third desk", "stand" => "first desk"
+  def spot(stand)
+    ordinal = ordinal_of(stand)
+    "#{ordinal.empty? ? 'first' : ordinal} #{surface_noun}"
+  end
+
+  # "third stand" => "third", "stand" => ""
+  def ordinal_of(stand)
+    stand.sub(/\s*stand\z/, '')
   end
 
   # Is this line the sale opening (or you arriving on the sales floor)?
@@ -321,15 +344,15 @@ module LimitedTreasures
       label = name && "#{name} (what others were buying; #{problem})"
       return [bought, bought || label ? said : "#{problem}; #{said}", label]
     end
-    return [false, "nothing on the #{stand}", nil] if items.empty?
+    return [false, "nothing on the #{spot(stand)}", nil] if items.empty?
 
-    # One display holding everything: ;LT third means its third item
+    # Only one desk, holding everything: ;LT third means its third item
     # (or the last one, if fewer are left)
     item = items.first
-    where = stand
+    where = spot(stand)
     if single_display?
-      item = items[ORDINALS.index(stand.sub(/\s*stand\z/, '')).to_i] || items.last
-      where = 'display'
+      item = items[ORDINALS.index(ordinal_of(stand)).to_i] || items.last
+      where = surface_noun
     end
 
     names = buy_names(item)
@@ -344,16 +367,17 @@ module LimitedTreasures
   end
 
   # What's on a stand: [items, nil] (no items if it's empty) or [nil, why not].
-  # Goes down LOOK_PLAN ("third display", "display", "third stand") and
-  # remembers the one that worked.
+  # Tries "third desk", "third display", "third stand", then a lone "desk",
+  # and remembers the one that worked.
   def stand_items(stand)
-    return [nil, "can't find the displays or stands"] if @no_stands
+    return [nil, "can't find the #{@surfaces.map { |noun| "#{noun}s" }.join(' or ')}"] if @no_stands
 
-    ordinal = stand.sub(/\s*stand\z/, '')
+    ordinal = ordinal_of(stand)
     tried = []
-    (@surface ? [@surface] : LOOK_PLAN).each do |noun, single|
+    plan = @surfaces.map { |noun| [noun, false] } + [[@surfaces.first, true]]
+    (@surface ? [@surface] : plan).each do |noun, single|
       target = single ? noun : [ordinal, noun].reject(&:empty?).join(' ')
-      # For the first stand, "display" is both the first display and the only one
+      # For the first one, "desk" is both the first desk and a lone desk
       next if tried.include?(target)
 
       items, problem = look_once(target)
@@ -368,7 +392,7 @@ module LimitedTreasures
     [nil, "no #{tried.join(' or ')} here"]
   end
 
-  # Did the items turn out to be on one display?
+  # Did the items turn out to be on a lone desk?
   def single_display?
     @surface ? @surface[1] : false
   end
@@ -422,17 +446,17 @@ module LimitedTreasures
   end
 
   def look_at_stands
-    STANDS.each do |label, stand|
+    STANDS.each_value do |stand|
       seen = look_on(stand)
       if @no_stands
         DRC.message("LT: Nothing to look at: #{seen}")
         return
       end
       if single_display?
-        DRC.message("LT: Display: #{seen}")
+        DRC.message("LT: #{surface_noun.capitalize}: #{seen}")
         return
       end
-      DRC.message("LT: #{label} stand: #{seen}")
+      DRC.message("LT: #{spot(stand).capitalize}: #{seen}")
     end
   end
 end
@@ -441,16 +465,18 @@ LTS = LimitedTreasures
 
 if Script.current.vars[1].to_s =~ /\A(?:help|\?)\z/i
   respond <<~HELP
-    LT: buys Limited Treasures the moment the sale opens, then looks at the stands.
-      ;LT                          just go in and look at the stands
+    LT: buys Limited Treasures the moment the sale opens, then looks at the desks.
+      ;LT                          just go in and look at the desks
       ;LT mask greatcoat bookbag   buy these, in this order
       ;LT "half mask" greatcoat    quote (or comma-separate) names with spaces
-      ;LT third                    buy whatever is on the third stand (or first, second)
+      ;LT third                    buy whatever is on the third desk (or first, second)
+      ;LT third table              same, if they've become tables
       ;LT now mask                sale already open? go in right away (before it opens: trap!)
   HELP
   exit
 end
 
+LTS.name_surface(Script.current.vars[0])
 now, items = LTS.parse_args(Script.current.vars[0])
 rocks, items = items.partition { |item| item =~ /\brock\b/i }
 unless rocks.empty?
@@ -465,8 +491,9 @@ if !items.empty? && DRC.left_hand && DRC.right_hand
   DRC.message('LT: Both your hands are full. Free one, or I stow your left hand before the first buy.')
 end
 
-wanted = items.map { |item| (stand = LTS.stand_for(item)) ? "whatever is on the #{stand}" : item }
-plan = items.empty? ? 'look at the stands' : "buy #{wanted.join(', ')}, then look at the stands"
+wanted = items.map { |item| (stand = LTS.stand_for(item)) ? "whatever is on the #{LTS.spot(stand)}" : item }
+look = "look at the #{LTS.surface_noun}s"
+plan = items.empty? ? look : "buy #{wanted.join(', ')}, then #{look}"
 echo(now ? "Going in now to #{plan}." : "Waiting for the curtain to power down, then I'll #{plan}.")
 
 paused = []
@@ -504,7 +531,7 @@ results = items.map do |item|
   next [item, *LTS.buy(item)] unless stand
 
   bought, said, label = LTS.buy_from(stand)
-  [label || "the #{stand}", bought, said]
+  [label || "the #{LTS.spot(stand)}", bought, said]
 end
 results.each do |item, bought, said|
   DRC.message("LT: #{bought ? 'Bought' : "Didn't get"} #{item}: #{said}")
