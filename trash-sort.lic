@@ -27,8 +27,8 @@
   on until the vault has no more deeds. RUMMAGE's long names ("deed for a
   lelori log") don't work for GET, and sizes don't either ("get tiny bar"
   fails), but whatever GET hands over gets sorted, so every one is reached.
-  Each copy of a name is appraised: two tiny brass bars appraised at 242 and
-  146.
+  Copies of a name can be worth different amounts (two tiny brass bars
+  appraised at 242 and 146), so each copy is appraised, once.
 
   Never thrown out, and not even picked up:
     - crafting tools and supplies: your yaml's *_tools, what ;stash put in the
@@ -50,8 +50,12 @@
     - anything APPRAISE doesn't give an exact Kronar figure for: "worth
       exactly nothing" (memory orbs appraise like that, 2026-11-21), "probably
       worth around several thousand", or a value in another currency
-  Something trash-sort.yaml already has as kept at 10K or more isn't
-  appraised again, if it's the only one of its name.
+  What trash-sort.yaml already has as kept isn't appraised again, copy for
+  copy: with two huge selatila shards kept on earlier runs and three in the
+  vault, only the third one GET reaches is appraised. (What ;stash just put in
+  comes after what was there, in the 11/23 and 11/25 runs.) Something whose
+  name was thrown out before is appraised again, since it's not the same one
+  and may be worth more.
 
   Usage:
     ;trash-sort
@@ -402,10 +406,37 @@ def appraise(noun)
   [Regexp.last_match(1).delete(',').to_i, result]
 end
 
-# Appraised at 10K or more on an earlier run, so no need to again
-def kept_before?(name)
+# Something worth this much (or that APPRAISE says this of) stays kept, so it
+# needn't be appraised again. Not something under 10K that didn't go down the
+# chute, or that APPRAISE didn't answer for.
+def settled?(worth)
+  worth.is_a?(Integer) ? worth >= TRASH_UNDER : worth.to_s =~ /\bcontainer\b|\bworth\b/
+end
+
+# What each copy of this that earlier runs (or this one, so far) kept is
+# worth. One value per name is all trash-sort.yaml had before 2026-11-25.
+def kept_values(name)
   before = @values[name]
-  before.is_a?(Hash) && before['result'] == 'kept' && before['value'].is_a?(Integer) && before['value'] >= TRASH_UNDER
+  return [] unless before.is_a?(Hash)
+  return before['kept'] if before['kept'].is_a?(Array)
+
+  before['result'] == 'kept' && settled?(before['value']) ? [before['value']] : []
+end
+
+# Writes down what a copy appraised at and what became of it
+def record(name, worth, result)
+  kept = kept_values(name)
+  kept += [worth] if result == 'kept' && settled?(worth)
+  @values[name] = { 'value' => worth, 'appraised' => Time.now.strftime('%Y-%m-%d %H:%M'), 'result' => result }
+  @values[name]['kept'] = kept unless kept.empty?
+end
+
+# Copies that have left the vault since: GET hands over the first one, so it's
+# the first values that go. If they're all gone they're likely just unstashed
+# for now, so then nothing's forgotten.
+def forget_gone(name, count)
+  kept = kept_values(name)
+  @values[name]['kept'] = kept.last(count) if kept.size > count
 end
 
 # Takes ;stash's entry for something thrown out off its list
@@ -417,12 +448,12 @@ def forget_stashed(name)
   @stash_changed = true
 end
 
-# Something to appraise: not protected, and not the only one of its name that
-# an earlier run already kept at 10K or more. Two of a name can be worth
-# different amounts (tiny brass bars at 242 and 146, 2026-11-21), so a name
-# with copies gets each one appraised.
+# Something to appraise: not protected, and not one of the copies of it that
+# are already kept. Those come first, so it's the copies past them (and two of
+# a name can be worth different amounts: tiny brass bars at 242 and 146,
+# 2026-11-21).
 def fair_game?(name)
-  protected_reason(name).nil? && !(kept_before?(name) && @copies[name] <= 1)
+  protected_reason(name).nil? && @seen[name] > kept_values(name).size
 end
 
 # Which listed name this is that's still to be sorted out, if any
@@ -441,6 +472,8 @@ end
 def ask_vault(address, names)
   noun = address.split.last
   at = 0
+  # How many of each name GET has handed over, counting from its first
+  @seen = Hash.new(0)
   while names.any? { |name| @pending[name].positive? }
     return true if at >= ORDINALS.size
 
@@ -454,9 +487,10 @@ def ask_vault(address, names)
 end
 
 # Appraises what GET just handed over and throws it down the chute or puts it
-# back. Something protected, or already kept, goes straight back. Returns
+# back. Something protected, or a copy already kept, goes straight back. Returns
 # :thrown, :kept or :back.
 def sort_in_hand(got, noun)
+  @seen[got] += 1
   unless got && fair_game?(got)
     put_in_vault(noun)
     return :back
@@ -465,17 +499,17 @@ def sort_in_hand(got, noun)
   listed = pending_name(got)
   @pending[listed] -= 1 if listed
   value, said = appraise(noun)
-  @values[got] = { 'value' => value || said, 'appraised' => Time.now.strftime('%Y-%m-%d %H:%M') }
   if value && value < TRASH_UNDER && into_chute?(noun)
     @trashed << "#{got} (#{with_commas(value)})"
-    @values[got]['result'] = 'thrown out'
+    @seen[got] -= 1
+    record(got, value, 'thrown out')
     forget_stashed(got)
     return :thrown
   end
 
   put_in_vault(noun)
-  @values[got]['result'] = 'kept'
-  @kept << "#{got} (#{value ? with_commas(value) : said})"
+  record(got, value || said, 'kept')
+  @kept << "#{got} (#{worth_text(value || said)})"
   :kept
 end
 
@@ -493,11 +527,13 @@ def sort_out_vault
     reason = protected_reason(name)
     if reason
       count.times { @protected[reason] << name }
-    elsif kept_before?(name) && count == 1
-      @kept << "#{name} (#{with_commas(@values[name]['value'])}, appraised before)"
-    else
-      @pending[name] = count
+      next
     end
+
+    forget_gone(name, count)
+    kept = kept_values(name)
+    kept.each { |worth| @kept << "#{name} (#{worth_text(worth)}, appraised before)" }
+    @pending[name] = count - kept.size if count > kept.size
   end
 
   @pending.keys.group_by { |name| noun_of(name) }.each do |noun, names|
@@ -514,6 +550,11 @@ end
 # 25000 as "25,000"
 def with_commas(number)
   number.to_s.reverse.scan(/\d{1,3}/).join(',').reverse
+end
+
+# Kronars, or what APPRAISE said instead
+def worth_text(worth)
+  worth.is_a?(Integer) ? with_commas(worth) : worth
 end
 
 def load_yaml(path, default)
