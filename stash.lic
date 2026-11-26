@@ -79,7 +79,7 @@ SUPPLIES = {
     'flux' # borax flux
   ],
   'shaping' => [
-    'shap.book', # book of apprentice shaping instructions
+    'shap.book', # book of journeyman shaping instructions (since 11/26/2026)
     'engineering logbook'
   ],
   'enchanting' => [
