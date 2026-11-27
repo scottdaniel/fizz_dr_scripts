@@ -1,0 +1,51 @@
+=begin
+  timewalk.lic
+
+  After finishing a time lock at Aesthene's Close, walks back out and
+  starts the next one:
+
+    south, south, go port
+    redeem slip (twice, to confirm), getting the time slips from your
+      rucksack first if they aren't in your hands
+    ask timekeeper about access
+    touch lock (twice, to confirm)
+
+  Then you're attuned to a new lock and can start guessing words.
+
+  Usage:
+    ;timewalk
+=end
+
+def timewalk_fail(why)
+  DRC.message("timewalk: #{why}")
+  exit
+end
+
+# Lines that mean the command didn't work; anything unexpected times out.
+refused = /What were you referring to|You can't|You don't|must be holding|To whom are you speaking/
+
+move 'south'
+move 'south'
+move 'go port'
+
+if !DRCI.in_hands?('slip') && !DRCI.get_item?('slip', 'rucksack')
+  timewalk_fail('no time slips in your hands or rucksack.')
+end
+
+if DRC.bput('redeem slip', /repeat the command within/, refused) !~ /repeat the command/
+  timewalk_fail('redeem slip did not ask to confirm (out of slips, or no Timekeeper here?).')
+end
+
+if DRC.bput('redeem slip', /takes one of your slips/, refused) !~ /takes one/
+  timewalk_fail('the second redeem slip did not take a slip.')
+end
+
+if DRC.bput('ask timekeeper about access', /shows you to a time lock/, refused) !~ /shows you/
+  timewalk_fail('the Timekeeper did not take you in.')
+end
+
+touched = DRC.bput('touch lock', /TOUCH the lock again/, /You reach out and touch the lock/, refused)
+touched = DRC.bput('touch lock', /You reach out and touch the lock/, refused) if touched =~ /TOUCH the lock again/
+timewalk_fail('touch lock did not attune you to a lock.') unless touched =~ /You reach out/
+
+DRC.message('timewalk: attuned to a new time lock. Your turn.')
