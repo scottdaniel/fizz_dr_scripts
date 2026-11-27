@@ -2,13 +2,14 @@
   start_marathon.lic
 
   Starts ;taskmaster marathon with the outfitting tools, and the stock you
-  already have, on hand. If ;stash left any of either in the vault, it runs
-  ;unstash marathon first: the outfitting tools, plus one piece each of the
-  burlap cloth, rat-pelt leather, wool yarn and cotton thread the marathon
-  sews and knits from (not your rare cloths and leathers). Every other piece
-  of those four, stashed or in your crafting_container, goes down the
-  vault's garbage chute. It starts taskmaster only once none of the tools
-  are left there. Stock that couldn't be got back doesn't stop it, since
+  already have, on hand. If ;stash put any of either away (in your Eddy, or
+  the vault), it runs ;unstash marathon first: the outfitting tools, plus one
+  piece each of the burlap cloth, rat-pelt leather, wool yarn and cotton
+  thread the marathon sews and knits from (not your rare cloths and
+  leathers). Every other piece of those four, stashed or in your
+  crafting_container, is thrown out: down the vault's garbage chute at the
+  vault, else into a bin if the room has one, or dropped. It starts
+  taskmaster only once none of the tools are left stashed. Stock that couldn't be got back doesn't stop it, since
   taskmaster buys whatever it's short of.
 
   taskmaster tops up cloth and leather to 100 yards and yarn and thread to
@@ -25,7 +26,8 @@
   knitted outfit task, and then stopped at sew's first step: "You seem to be
   missing: knitting needles".
 
-  When nothing for the marathon is stashed there's no trip to the vault.
+  When nothing for the marathon is stashed there's no trip anywhere, and
+  what's in the Eddy needs none either.
   Unstash needs empty hands: if yours are full and tools are stashed, it says
   so and this stops before starting taskmaster. With your hands full it
   doesn't combine anything either.
@@ -84,13 +86,18 @@ def list_stashed(entries)
 end
 
 # "knitting needles, outfitting logbook, and one piece each of wool yarn and
-# burlap cloth (the rest go down the chute)"
+# burlap cloth (the rest are thrown out)"
 def list_trip(entries)
   stock, gear = entries.partition { |entry| entry['kind'] == 'materials' }
   parts = gear.empty? ? [] : [list_stashed(gear)]
   names = stock.map { |entry| entry['name'] }.uniq
-  parts << "one piece each of #{names.join(', ')} (the rest go down the chute)" unless names.empty?
+  parts << "one piece each of #{names.join(', ')} (the rest are thrown out)" unless names.empty?
   parts.join(', and ')
+end
+
+# "your Eddy", "the vault", or "your Eddy and the vault": where ;stash put these
+def marathon_stashed_where(entries)
+  entries.map { |entry| entry['in'] == 'eddy' ? 'your Eddy' : 'the vault' }.uniq.sort.join(' and ')
 end
 
 def marathon_hands
@@ -164,18 +171,18 @@ stashed = stashed_for_marathon
 if stashed.empty?
   exit unless combine_marathon_stock(bag)
 else
-  DRC.message("start_marathon: getting these from the vault first: #{list_trip(stashed)}")
+  DRC.message("start_marathon: getting these from #{marathon_stashed_where(stashed)} first: #{list_trip(stashed)}")
   DRC.wait_for_script_to_complete('unstash', ['marathon'])
   exit unless combine_marathon_stock(bag)
 
   stashed = stashed_for_marathon
   tools = stashed_outfitting_gear
   unless tools.empty?
-    DRC.message("start_marathon: still in the vault: #{list_stashed(tools)}. Not starting the marathon without them. " \
+    DRC.message("start_marathon: still in #{marathon_stashed_where(tools)}: #{list_stashed(tools)}. Not starting the marathon without them. " \
                 'Run ;unstash outfitting (with empty hands), then marathon again.')
     exit
   end
-  DRC.message("start_marathon: still in the vault, so taskmaster buys what it's short of: #{list_stashed(stashed)}") unless stashed.empty?
+  DRC.message("start_marathon: still in #{marathon_stashed_where(stashed)}, so taskmaster buys what it's short of: #{list_stashed(stashed)}") unless stashed.empty?
 end
 
 # Started on its own, as if typed, so ;kill taskmaster and ;stop_marathon

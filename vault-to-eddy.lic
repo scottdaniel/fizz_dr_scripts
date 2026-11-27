@@ -1,0 +1,462 @@
+=begin
+  vault-to-eddy.lic
+
+  Moves what's in your vault at your hometown's Carousel into your Eddy, the
+  effervescent eddy you wear: a portable vault that holds up to 250 things
+  weighing up to 1700 stones, reached from anywhere through its watery
+  portal. Everything goes except the vault's own large shelf. Then it closes
+  the vault and leaves you in the Carousel.
+
+  What ;stash wrote down is marked as in the Eddy, so ;unstash gets it back
+  from there without walking to the Carousel, and ;stash puts things in the
+  Eddy from then on. Weapons go too. A weapon or piece of gear from your
+  yaml's gear list that ;stash didn't write down goes on the list as one of
+  your weapons, so ;unstash weapons (which t2's hunt block runs first) puts
+  it back where combat-trainer keeps it.
+
+  It takes things out the way trash-sort does, by noun: "get deed from
+  vault", into the Eddy, "get deed from vault" again, until the vault has no
+  more deeds. Something that stays (the shelf, or what the Eddy won't take)
+  is put back, and "get second deed" reaches the next one.
+
+  A stash list entry that nothing in the vault answered to isn't there any
+  more, so it comes off the list, as ;unstash would do. If the Eddy fills up,
+  the rest stays in the vault and on the list, and nothing comes off it.
+
+  Run it with empty hands, and not while t2, a crafting script, stash,
+  unstash or trash-sort is running.
+
+  Usage:
+    ;vault-to-eddy
+=end
+
+# What ;stash put away. Shared with stash, unstash and trash-sort.
+STASH_LIST = File.join(DATA_DIR, XMLData.game, Char.name, 'stash.yaml')
+
+# Scripts that use the stash list or the vault, or carry things around
+BUSY_SCRIPTS = %w[t2 stash unstash trash-sort start_marathon taskmaster workorders].freeze
+
+# The Eddy, from Fizzlestiks's first look at it (2026-11-27): you PUT things
+# in the eddy, and GET and LOOK through its portal ("LOOK IN PORTAL -or LOOK
+# IN WATERY PORTAL"). Always "my": LOOK IN PORT at the Strand looked in the
+# meeting portal there. GET finds nothing until you LOOK in the portal
+# (DRCI's get_item_from_eddy_portal? says so too).
+EDDY = 'my eddy'
+EDDY_PORTAL = 'my portal'
+EDDY_OPENED = [/^You open/, /already open/i].freeze
+EDDY_LOOKED = [/^In the .*/, /nothing in there/i].freeze
+EDDY_UNREACHABLE = [/^What were you referring to/, /^I could not find/, /^I don't know what you are referring to/,
+                    /funnel downward/, /^You can't/, /interfer/i].freeze
+# "There isn't any more room in the eddy for that." (dr-scripts' own tests).
+# The weight limit's message isn't known yet, so those are guesses.
+EDDY_FULL = [/isn't any more room/i, /too heavy/i, /\bweight\b/i, /too many/i, /\bfull\b/i].freeze
+# Just this one won't go in ("fit within the eddy container's dimensions")
+EDDY_REFUSED = [/^You can't/, /^You must/, /\bfit\b/i, /too (?:big|large|long|wide|tall)/i, /^That's/, /^What were you referring to/].freeze
+
+# Getting in and out of the vault: the same steps and messages as ;stash
+ARCHES = ['go blackwood arch', 'go ironwood arch', 'go rosewood arch'].freeze
+ARCH_IN = /escorts you through/
+RENT_DUE = /\brent\b/i
+ARCH_RESTRICTED = /access to that arch is restricted/
+ARCH_BUSY = /is using that booth|blocks|someone|using|Sorry/
+LEVER_PULLED = /door pops open/
+VAULT_OPENED = [/^The vault opens/, /already open/i].freeze
+CHAMBER = /Chamber/
+CAROUSEL_CHAMBER = /Carousel Chamber/
+CAROUSEL_BOOTH = /Carousel Booth/
+
+# bput returns only the matched text, so these run to the end of the line.
+# RUMMAGE lists the whole vault: "You rummage through a secure vault and see
+# a large shelf, some heavy wool cloth and a massive selatila shard."
+RUMMAGED = /^You rummage .* and see .*/
+RUMMAGED_EMPTY = /^You rummage .* but there is nothing in there/
+VAULT_LIST = /^In the .* you see .*/
+VAULT_EMPTY = /^There is nothing in there/
+GET_SUCCESS = [/^You get .*/, /^You pick up .*/].freeze
+NOT_FOUND = [/^What were you referring to/, /^I could not find/, /^I don't know what you are referring to/].freeze
+GET_REFUSED = [/^You need a free hand/, /^You can't/, /^Please rephrase/].freeze
+PUT_SUCCESS = [/^You put .*/].freeze
+
+# The vault's own furniture, which stays: the large shelf ("container - vault
+# storage", 2026-11-25)
+VAULT_FURNITURE = /\b(?:shelf|shelves|rack|cabinet|bookcase|armoire)\z/i
+
+# Lich's $ORDINALS: how far "get second deed", "get third deed" ... can count
+ORDINALS = %w[first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth
+              fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth twentieth].freeze
+# Words that follow the noun in a long name, as RUMMAGE gives them (trash-sort's)
+AFTER_NOUN = /\A(?:for|of|with|from|in|on|at|marked|comprised|tipped|sharpened|engraved|carved|shaped|inlaid|
+                wrapped|bearing|featuring|covered|crafted|made|set|trimmed|adorned|embroidered|slung|decorated|
+                painted|etched|studded|bound|lined|edged|depicting|showing|filled|holding|containing|accented|
+                hung|tied|strung)\z/xi
+# "pair of scissors", "handful of time slips": the noun is the last word
+MEASURES = /\A(?:pair|handful|bunch|bundle|piece|bit|scrap|set)\z/i
+
+def hands_empty?
+  DRC.right_hand.nil? && DRC.left_hand.nil?
+end
+
+# The hand display and room title can lag the game text by a moment
+def settle
+  10.times do
+    return true if yield
+
+    pause 0.1
+  end
+  false
+end
+
+def in_room?(pattern)
+  [XMLData.room_title, XMLData.room_name].any? { |title| title.to_s =~ pattern }
+end
+
+def in_chamber?
+  in_room?(CHAMBER)
+end
+
+# Opens the Eddy and LOOKs in its portal, which GET needs first. False if
+# you don't have one or can't reach it here.
+def eddy_ready?
+  opened = DRC.bput("open #{EDDY}", *EDDY_OPENED, *EDDY_UNREACHABLE)
+  return false unless EDDY_OPENED.any? { |pattern| opened =~ pattern }
+
+  looked = DRC.bput("look in #{EDDY_PORTAL}", *EDDY_LOOKED, *EDDY_UNREACHABLE)
+  EDDY_LOOKED.any? { |pattern| looked =~ pattern }
+end
+
+# Walks to the hometown's Carousel and opens your vault, starting from the
+# chamber or a booth if you're in one already. Remembers how far it got in
+# @vault_steps so leave_vault can undo it. Says why and returns false if it
+# can't.
+def open_vault(settings)
+  @vault_steps = []
+  if in_room?(CAROUSEL_CHAMBER)
+    @vault_steps.push(:booth, :chamber)
+  else
+    return false unless into_booth(settings)
+    return false unless into_chamber
+  end
+
+  result = DRC.bput('open vault', *VAULT_OPENED, RENT_DUE, *NOT_FOUND, /^You can't/)
+  unless VAULT_OPENED.any? { |pattern| result =~ pattern }
+    DRC.message("vault-to-eddy: the vault didn't open: #{result.empty? ? 'no reply' : result}")
+    return false
+  end
+  @vault_steps << :open
+  true
+end
+
+# To the hometown's Carousel and through an arch, unless you're in a booth
+# already
+def into_booth(settings)
+  if in_room?(CAROUSEL_BOOTH)
+    @vault_steps << :booth
+    return true
+  end
+
+  room = get_data('town')[settings.hometown]&.dig('vault', 'id')
+  unless room
+    DRC.message("vault-to-eddy: no vault listed for your hometown, #{settings.hometown}.")
+    return false
+  end
+  unless DRCT.walk_to(room)
+    DRC.message("vault-to-eddy: couldn't walk to the Carousel (room #{room}).")
+    return false
+  end
+  enter_booth
+end
+
+# From the booth through its door into the vault chamber
+def into_chamber
+  unless DRC.bput('pull lever', LEVER_PULLED, *NOT_FOUND, /^You can't/) =~ LEVER_PULLED
+    DRC.message("vault-to-eddy: pulling the lever didn't open the door.")
+    return false
+  end
+
+  DRC.bput('go door', /.+/)
+  unless settle { in_chamber? }
+    DRC.message("vault-to-eddy: GO DOOR didn't reach the Carousel Chamber. Room: #{XMLData.room_title.inspect}")
+    return false
+  end
+  @vault_steps << :chamber
+  true
+end
+
+# Through the first arch whose booth is free, waiting a while if all are in use
+def enter_booth
+  6.times do
+    ARCHES.each do |arch|
+      result = DRC.bput(arch, ARCH_IN, RENT_DUE, ARCH_RESTRICTED, ARCH_BUSY, *NOT_FOUND)
+      if result =~ ARCH_IN
+        @vault_steps << :booth
+        return true
+      end
+      if result =~ RENT_DUE
+        DRC.message('vault-to-eddy: vault rent is due. Pay it at the Carousel desk (GO DESK), then try again.')
+        return false
+      end
+      if NOT_FOUND.any? { |pattern| result =~ pattern }
+        DRC.message("vault-to-eddy: there's no #{arch.split[1]} arch here, so stopping.")
+        return false
+      end
+    end
+    DRC.message('vault-to-eddy: every booth is busy. Waiting 10 seconds.')
+    pause 10
+  end
+  DRC.message('vault-to-eddy: gave up waiting for a free booth.')
+  false
+end
+
+# Closes the vault and goes back out to the Carousel, as far as open_vault got
+def leave_vault
+  steps = @vault_steps.to_a
+  DRC.bput('close vault', /^You close the vault/, /already closed/i, /isn't open/i, *NOT_FOUND) if steps.include?(:open)
+  DRC.bput('go door', /.+/) if steps.include?(:chamber)
+  DRC.bput('go arch', /door slams closed/, /.+/) if steps.include?(:booth)
+  @vault_steps = []
+end
+
+# What's in the vault, by the names RUMMAGE gives (LOOK IN if RUMMAGE doesn't
+# answer, which can stop short of a full vault), or nil if neither answers
+def vault_contents
+  result = DRC.bput('rummage vault', RUMMAGED, RUMMAGED_EMPTY, *NOT_FOUND)
+  return [] if result =~ RUMMAGED_EMPTY
+
+  if result =~ RUMMAGED
+    listed = result.sub(/^You rummage .*? and see /, '')
+  else
+    result = DRC.bput('look in vault', VAULT_LIST, VAULT_EMPTY, *NOT_FOUND)
+    return [] if result =~ VAULT_EMPTY
+    return nil unless result =~ VAULT_LIST
+
+    listed = result.sub(/^In the .*? you see /, '')
+  end
+  listed.sub(/\A(?:some|an|a) /, '').sub(/\.\z/, '')
+        .split(/(?:,|\band) (?:some|an|a) /).map(&:strip).reject(&:empty?)
+end
+
+# The noun GET takes, which in a long name comes before one of AFTER_NOUN:
+# "deed FOR a lelori log", "flask OF oil" (trash-sort's)
+def noun_of(name)
+  words = name.split
+  at = (1...words.size).find { |index| words[index] =~ AFTER_NOUN }
+  return words.last if at.nil? || (words[at - 1] =~ MEASURES && words[at].casecmp?('of'))
+
+  words[at - 1]
+end
+
+# What GET handed over: "You get a concise contract marked with the crest of
+# the Traders' Guild from inside a secure vault." gives the contract's name
+def got_name(result)
+  result[/^You (?:get|pick up) (?:an? |some |the |your )?(.+?) from inside\b/, 1] ||
+    result[/^You (?:get|pick up) (?:an? |some |the |your )?(.+?)(?: (?:from|off) .*)?\.?\z/, 1]
+end
+
+# Every word of one of these names is in the name ("gilt dagger" in "gilt
+# steel dagger")
+def named?(name, names)
+  words = name.to_s.downcase.split
+  names.any? do |wanted|
+    wanted_words = wanted.to_s.downcase.tr('.', ' ').split
+    !wanted_words.empty? && (wanted_words - words).empty?
+  end
+end
+
+# Your yaml's gear list (weapons, armor, shields), as the short names
+# EquipmentManager uses: "basket-hilt.cutlass". Only ones with an adjective:
+# a bare "gloves" would claim any gloves in the vault.
+def gear_short_names(settings)
+  settings.gear.to_a.filter_map do |piece|
+    next unless piece.is_a?(Hash)
+
+    adjective = piece[:adjective] || piece['adjective']
+    name = piece[:name] || piece['name']
+    "#{adjective}.#{name}" if adjective && name
+  end
+end
+
+# What ;stash weapons wrote down: no name, just the short name
+def weapon_entry?(entry)
+  entry['from'] == 'gear' || entry['for'].to_a.include?('weapons')
+end
+
+# Why this stays in the vault, or nil if it goes to the Eddy
+def stays_reason(name)
+  return 'the vault\'s own' if noun_of(name) =~ VAULT_FURNITURE
+
+  nil
+end
+
+# The stash list entry still marked as in the vault that this is, if any: the
+# same name, or one whose every word is in it ("deed for a lelori log" in
+# "deed for a thick lelori log"). A weapon's entry goes by its short name
+# ("basket-hilt.cutlass" in "basket-hilt cutlass").
+def entry_for(got)
+  open = @stash_list.reject { |entry| entry['in'] == 'eddy' || @marked.any? { |done| done.equal?(entry) } }
+  open.find { |entry| entry['name'].to_s.casecmp?(got) } ||
+    open.select { |entry| entry['name'] && named?(got, [entry['name']]) }.max_by { |entry| entry['name'].length } ||
+    open.find { |entry| entry['name'].nil? && weapon_entry?(entry) && named?(got, [entry['item']]) }
+end
+
+# A new entry for a piece of your gear that wasn't on the list, as ;stash
+# weapons writes one, so ;unstash weapons gets it back before a hunt
+def gear_entry_for(got)
+  short = @gear.select { |each| named?(got, [each]) }.max_by(&:length)
+  short && { 'item' => short, 'name' => nil, 'from' => 'gear', 'for' => ['weapons'], 'in' => 'eddy' }
+end
+
+def save_stash_list
+  File.write(STASH_LIST, @stash_list.to_yaml)
+end
+
+# Back in the vault. Stops the script if it's still in your hand.
+def back_in_vault(noun)
+  return if DRC.bput("put my #{noun} in vault", *PUT_SUCCESS, *NOT_FOUND, /no room/i, /^You can't/) =~ PUT_SUCCESS.first && settle { hands_empty? }
+
+  DRC.message("vault-to-eddy: couldn't put the #{noun} back in the vault. It's still in your hand, so stopping.")
+  exit
+end
+
+# Puts what's in hand in the Eddy: :put, :full, or :refused. Empty hands
+# after are what count, as its messages aren't all known yet.
+def into_eddy(noun)
+  result = DRC.bput("put my #{noun} in #{EDDY}", *PUT_SUCCESS, *EDDY_FULL, *EDDY_REFUSED)
+  return :put if settle { hands_empty? }
+  return :full if EDDY_FULL.any? { |pattern| result =~ pattern }
+
+  :refused
+end
+
+# Moves everything under this noun: "get deed from vault" again and again,
+# each into the Eddy. Something that stays is put back, and the next ordinal
+# reaches past it. Returns :done, :full, or :ordinals (more stayed than GET
+# can count past).
+def move_noun(noun)
+  stayed = 0
+  loop do
+    return :ordinals if stayed >= ORDINALS.size
+
+    asked = stayed.zero? ? noun : "#{ORDINALS[stayed]} #{noun}"
+    result = DRC.bput("get #{asked} from vault", *GET_SUCCESS, *NOT_FOUND, *GET_REFUSED)
+    return :done unless GET_SUCCESS.any? { |pattern| result =~ pattern } && settle { !hands_empty? }
+
+    got = got_name(result) || noun
+    reason = stays_reason(got)
+    if reason
+      back_in_vault(noun)
+      @stayed[reason] << got unless @stayed[reason].include?(got)
+      stayed += 1
+      next
+    end
+
+    case into_eddy(noun)
+    when :put
+      @refused_first = 0
+      @moved << got
+      entry = entry_for(got)
+      if entry
+        entry['in'] = 'eddy'
+      else
+        entry = gear_entry_for(got)
+        next unless entry
+
+        @stash_list << entry
+        @added << got
+      end
+      @marked << entry
+      save_stash_list
+    when :full
+      back_in_vault(noun)
+      return :full
+    else
+      back_in_vault(noun)
+      @stayed["the Eddy wouldn't take it"] << got
+      stayed += 1
+      # The first three all refused: the Eddy doesn't work in here
+      @refused_first += 1 if @moved.empty?
+      return :unreachable if @refused_first >= 3
+    end
+  end
+end
+
+running = BUSY_SCRIPTS.select { |name| Script.running?(name) }
+unless running.empty?
+  DRC.message("vault-to-eddy: #{running.join(', ')} #{running.size > 1 ? 'are' : 'is'} running. Run this once nothing else is.")
+  exit
+end
+unless hands_empty?
+  DRC.message('vault-to-eddy: empty your hands first.')
+  exit
+end
+unless eddy_ready?
+  DRC.message("vault-to-eddy: couldn't open your Eddy and look in its portal here. Are you wearing it?")
+  exit
+end
+
+settings = get_settings
+@stash_list = File.exist?(STASH_LIST) ? YAML.safe_load(File.read(STASH_LIST)) || [] : []
+@gear = gear_short_names(settings)
+@moved = []
+@marked = []
+@added = []
+@stayed = Hash.new { |hash, reason| hash[reason] = [] }
+@refused_first = 0
+stopped = nil
+left = nil
+
+begin
+  exit unless open_vault(settings)
+  # The Eddy has to work in the vault chamber too
+  unless eddy_ready?
+    DRC.message("vault-to-eddy: couldn't reach your Eddy's portal from the vault chamber, so nothing's moved.")
+    exit
+  end
+
+  names = vault_contents
+  if names.nil?
+    DRC.message("vault-to-eddy: RUMMAGE VAULT and LOOK IN VAULT didn't say what's in it, so nothing's moved.")
+    exit
+  end
+
+  names.reject { |name| stays_reason(name) }.map { |name| noun_of(name).downcase }.uniq.each do |noun|
+    outcome = move_noun(noun)
+    next if outcome == :done
+
+    stopped = outcome
+    break if %i[full unreachable].include?(outcome)
+  end
+  left = vault_contents
+ensure
+  leave_vault
+end
+
+dropped = []
+# Only when every noun was emptied: then a listed thing nothing answered to
+# isn't in the vault (or is still there under a name it does answer to)
+if stopped.nil? && left
+  gone = @stash_list.reject do |entry|
+    entry['in'] == 'eddy' || weapon_entry?(entry) || entry['name'].nil? || @marked.any? { |done| done.equal?(entry) } ||
+      left.any? { |name| entry['name'] && named?(name, [entry['name']]) }
+  end
+  dropped = gone.map { |entry| entry['name'] || entry['item'] }
+  unless gone.empty?
+    @stash_list.reject! { |entry| gone.any? { |each| each.equal?(entry) } }
+    save_stash_list
+  end
+end
+
+tally = ->(names) { names.tally.map { |name, count| count > 1 ? "#{name} (#{count})" : name }.join(', ') }
+if @moved.empty?
+  DRC.message('vault-to-eddy: nothing moved into the Eddy.')
+else
+  DRC.message("vault-to-eddy: moved #{@moved.size} thing(s) into your Eddy: #{tally.call(@moved)}")
+  listed = @marked.size - @added.size
+  DRC.message("vault-to-eddy: #{listed} of them were on the stash list, now marked as in the Eddy. ;unstash gets them from there.") unless listed.zero?
+  DRC.message("vault-to-eddy: your gear, put on the stash list so ;unstash weapons gets it back before a hunt: #{@added.join(', ')}") unless @added.empty?
+end
+@stayed.each { |reason, names| DRC.message("vault-to-eddy: left in the vault (#{reason}): #{names.join(', ')}") }
+DRC.message('vault-to-eddy: the Eddy is full, so the rest is still in the vault and on the list.') if stopped == :full
+DRC.message("vault-to-eddy: the Eddy wouldn't take the first three things, so stopping. Everything's still in the vault and on the list.") if stopped == :unreachable
+DRC.message('vault-to-eddy: more of one noun stayed than GET can count past, so some may be left. Run it again to check.') if stopped == :ordinals
+DRC.message("vault-to-eddy: on the stash list but not in the vault, dropped from the list: #{dropped.join(', ')}") unless dropped.empty?
+DRC.message("vault-to-eddy: still in the vault: #{left.empty? ? 'nothing' : tally.call(left)}") if left

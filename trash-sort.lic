@@ -9,7 +9,8 @@
     - anything else: back in the vault
   Every value is written down in Lich's data/DR/<character>/trash-sort.yaml,
   and anything thrown out comes off ;stash's list (stash.yaml), so ;unstash
-  doesn't look for it.
+  doesn't look for it. It only sorts the vault, not the Eddy: what ;stash put
+  in the Eddy stays on the list.
 
   It leaves you in the vault chamber with the vault open, because the chute
   holds what's thrown in until you leave the chamber ("A flap prevents it
@@ -439,9 +440,10 @@ def forget_gone(name, count)
   @values[name]['kept'] = kept.last(count) if kept.size > count
 end
 
-# Takes ;stash's entry for something thrown out off its list
+# Takes ;stash's entry for something thrown out off its list: one in the
+# vault, not one ;stash put in the Eddy (in: eddy) by the same name
 def forget_stashed(name)
-  at = @stash_list.index { |entry| entry['name'].to_s.casecmp?(name) }
+  at = @stash_list.index { |entry| entry['in'] != 'eddy' && entry['name'].to_s.casecmp?(name) }
   return unless at
 
   @stash_list.delete_at(at)

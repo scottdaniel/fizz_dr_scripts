@@ -1,24 +1,33 @@
 =begin
   unstash.lic
 
-  The opposite of ;stash. Opens your vault at your hometown's Carousel
-  (Crossing: ;go2 8285, through an arch, PULL LEVER, GO DOOR, OPEN VAULT),
-  gets back what ;stash wrote down, and puts each thing back in the container
-  it came from (or your crafting_container if that doesn't work). Then it
-  closes the vault and leaves you in the Carousel.
+  The opposite of ;stash. Gets back what ;stash wrote down and puts each
+  thing back in the container it came from (or your crafting_container if
+  that doesn't work). What's in your Eddy (the effervescent eddy you wear)
+  comes out through its portal right where you stand, weapons too. Only for
+  what's in your vault (what the Eddy wouldn't take) does it walk to your
+  hometown's Carousel and open the vault (Crossing: ;go2 8285, through an
+  arch, PULL LEVER, GO DOOR, OPEN VAULT); then it closes the vault and leaves
+  you in the Carousel.
 
   Only things ;stash wrote down come back, so whatever else you keep in the
-  vault stays there. Each item's full name is checked when you pick it up. If
-  it's the wrong one, it goes back and stays on the list.
+  Eddy or the vault stays there. Each item's full name is checked when you
+  pick it up. If it's the wrong one, it goes back and stays on the list.
+
+  GET finds nothing in the Eddy until you LOOK in its portal, so it looks
+  first. Something GET can't find in the Eddy comes off the list only if that
+  LOOK showed nothing by its noun; otherwise it stays on the list.
 
   Weapons go back the way combat-trainer puts them away after a hunt: worn
   again if your standard gear set wears them, else on their harness, in
-  their container, or stowed.
+  their container, or stowed. t2's hunt block runs ;unstash weapons before
+  every hunt; with no weapons stashed it does nothing, not even open the
+  Eddy.
 
   If the vault doesn't know an item by the name ;stash wrote down (GET MANA
   FOUNT doesn't work), it tries just the noun (GET FOUNT), still checking the
   full name. Anything that isn't there anymore is dropped from the list. If there's no
-  room to put something away, the rest stays in the vault and on the list for
+  room to put something away, the rest stays stashed and on the list for
   next time.
 
   ;stash writes down what each thing is for, so you can get back part of it.
@@ -47,8 +56,9 @@
     ;unstash materials forging  # just forging's materials (or shaping, and so on)
     ;unstash marathon           # before ;taskmaster marathon: outfitting gear, plus one piece each of the
                                 #   burlap cloth, rat-pelt leather, wool yarn and cotton thread it sews and
-                                #   knits from (not the rare cloths and leathers); the other pieces go down
-                                #   the vault's garbage chute
+                                #   knits from (not the rare cloths and leathers); the other pieces are
+                                #   thrown out (down the vault's garbage chute at the vault, else into a
+                                #   bin if the room has one, or dropped)
     ;unstash weapons            # just your weapons, back where combat-trainer keeps them
     ;unstash extras             # just your extras
 =end
@@ -67,8 +77,10 @@ GROUPS = (CRAFTING + %w[weapons extras]).freeze
 MARATHON_STOCK = /\b(?:burlap cloth|rat-pelt leather|wool yarn|cotton thread)$/i
 
 # Of that stock, ;unstash marathon brings back one piece of each and throws
-# every other piece down the vault's garbage chute, the stashed ones and the
-# extras in your crafting_container alike (they go first, to make room). A
+# every other piece out, the stashed ones and the extras in your
+# crafting_container alike (they go first, to make room): down the vault's
+# garbage chute at the vault, else into a bin or dropped (2026-11-27, once
+# the stock was in the Eddy and no trip to the vault was needed). A
 # stock the crafting_container has a piece of already comes back as none.
 # taskmaster COUNTs only one piece of each and tops it up (cloth and leather
 # to 100 yards, yarn and thread to 400, as much as a spool holds), so more
@@ -83,6 +95,22 @@ STOCK_NAMES = ['burlap cloth', 'rat-pelt leather', 'wool yarn', 'cotton thread']
 # How many times one name is asked for while it keeps handing over other
 # things of yours this unstash also wants
 MAX_TRIES = 20
+
+# The Eddy, from Fizzlestiks's first look at it (2026-11-27): you PUT things
+# in the eddy, and GET and LOOK through its portal ("LOOK IN PORTAL -or LOOK
+# IN WATERY PORTAL"). Always "my": LOOK IN PORT at the Strand looked in the
+# meeting portal there. GET finds nothing until you LOOK in the portal
+# (DRCI's get_item_from_eddy_portal? says so too). The same in stash and
+# vault-to-eddy.
+EDDY = 'my eddy'
+EDDY_PORTAL = 'my portal'
+EDDY_OPENED = [/^You open/, /already open/i].freeze
+EDDY_LOOKED = [/^In the .*/, /nothing in there/i].freeze
+EDDY_UNREACHABLE = [/^What were you referring to/, /^I could not find/, /^I don't know what you are referring to/,
+                    /funnel downward/, /^You can't/, /interfer/i].freeze
+# What LOOK lists last when a container holds more than it shows (the vault
+# did, 2026-11-21)
+EDDY_CUT_SHORT = /\bother stuff\b/
 
 # Getting in and out of the vault: the same steps and messages as ;stash
 ARCHES = ['go blackwood arch', 'go ironwood arch', 'go rosewood arch'].freeze
@@ -237,16 +265,51 @@ def right_item?(result, name)
   result =~ /^You (?:get|pick up) (?:a|an|some|the|your) #{Regexp.escape(name)} (?:from|off)\b/
 end
 
-def put_back(item)
-  DRC.bput("put my #{item} in vault", /^You put/, *NOT_FOUND, /no room/i, /^You can't/)
+# Where an entry is: :eddy if ;stash wrote "in: eddy", else :vault
+def store_of(entry)
+  entry['in'] == 'eddy' ? :eddy : :vault
+end
+
+def store_label(store)
+  store == :eddy ? 'Eddy' : 'vault'
+end
+
+# Back in the Eddy or the vault
+def put_back(item, store = :vault)
+  into = store == :eddy ? EDDY : 'vault'
+  DRC.bput("put my #{item} in #{into}", /^You put/, *NOT_FOUND, /no room/i, /isn't any more room/i, /^You can't/)
   return true if settle { hands_empty? }
 
-  DRC.message("unstash: couldn't put #{item} back in the vault. It's still in your hand.")
+  DRC.message("unstash: couldn't put #{item} back in the #{store_label(store)}. It's still in your hand.")
   exit
 end
 
-def get_from_vault(item)
-  DRC.bput("get #{item} from vault", *GET_SUCCESS, *GET_MISSING, *DRCI::GET_ITEM_FAILURE_PATTERNS)
+def get_from_vault(item, store = :vault)
+  from = store == :eddy ? EDDY_PORTAL : 'vault'
+  DRC.bput("get #{item} from #{from}", *GET_SUCCESS, *GET_MISSING, *DRCI::GET_ITEM_FAILURE_PATTERNS)
+end
+
+# Opens the Eddy and LOOKs in its portal, which GET needs first. Returns
+# every word of what LOOK listed (to tell what's gone, eddy_gone?), :unknown
+# if LOOK stopped short, or nil if you have no Eddy or can't reach it here.
+def eddy_words
+  opened = DRC.bput("open #{EDDY}", *EDDY_OPENED, *EDDY_UNREACHABLE)
+  return nil unless EDDY_OPENED.any? { |pattern| opened =~ pattern }
+
+  looked = DRC.bput("look in #{EDDY_PORTAL}", *EDDY_LOOKED, *EDDY_UNREACHABLE)
+  return nil unless EDDY_LOOKED.any? { |pattern| looked =~ pattern }
+  return [] if looked =~ /nothing in there/i
+  return :unknown if looked =~ EDDY_CUT_SHORT || looked !~ / you see /
+
+  looked.sub(/^In the .*? you see /, '').downcase.scan(/[\w'-]+/)
+end
+
+# GET found nothing for this in the Eddy, and LOOK showed nothing by its
+# noun either ("book" for shap.book, "deed" for lelori deed)
+def eddy_gone?(entry, words)
+  return false unless words.is_a?(Array)
+
+  !words.include?(entry['item'].to_s.downcase.split(/[\s.]/).last)
 end
 
 # The ways to ask the vault for something: the name ;stash wrote down, then
@@ -284,28 +347,29 @@ end
 # vault empties out instead of putting it back and giving up.
 def fetch(entry, container, others = [])
   item, name = entry.values_at('item', 'name')
+  store = store_of(entry)
   wrong = false
   vault_addresses(item, name).each do |address|
     MAX_TRIES.times do
-      result = get_from_vault(address)
+      result = get_from_vault(address, store)
       break if GET_MISSING.any? { |pattern| result =~ pattern }
       return :failed unless settle { !hands_empty? }
 
       if right_item?(result, name)
         return :got if entry['from'] == 'gear' ? return_weapon? : DRCI.put_away_item?(address, [entry['from'], container].compact.uniq)
 
-        put_back(address)
+        put_back(address, store)
         return :container_full
       end
 
-      other = others.find { |candidate| right_item?(result, candidate['name']) }
+      other = others.find { |candidate| store_of(candidate) == store && right_item?(result, candidate['name']) }
       unless other
-        put_back(address)
+        put_back(address, store)
         wrong = true
         break
       end
       unless DRCI.put_away_item?(address, [other['from'], container].compact.uniq)
-        put_back(address)
+        put_back(address, store)
         return :container_full
       end
       others.delete_if { |candidate| candidate.equal?(other) }
@@ -334,16 +398,24 @@ def stock_down_chute?(name)
   DRC.bput("put my #{name} in chute", STOCK_CHUTED, *NOT_FOUND, /^You can't/) =~ STOCK_CHUTED && settle { hands_empty? }
 end
 
+# Throws out the piece in hand: down the chute with the vault open, else into
+# a bin if the room has one, or dropped (DRCI.dispose_trash)
+def stock_thrown_out?(name)
+  return stock_down_chute?(name) if @vault_steps.to_a.include?(:open)
+
+  DRCI.dispose_trash(name) && settle { hands_empty? }
+end
+
 # Throws away +extra+ pieces of a marathon stock from the crafting_container,
-# always the second one, so the first stays. Returns how many went down the
-# chute.
+# always the second one, so the first stays. Returns how many were thrown
+# out.
 def chute_extra_pieces(name, container, extra)
   thrown = 0
   extra.times do
     result = DRC.bput("get second #{name} from my #{container}", *GET_SUCCESS, *GET_MISSING, *DRCI::GET_ITEM_FAILURE_PATTERNS)
     break unless GET_SUCCESS.any? { |pattern| result =~ pattern } && settle { !hands_empty? }
 
-    if right_item?(result, name) && stock_down_chute?(name)
+    if right_item?(result, name) && stock_thrown_out?(name)
       thrown += 1
       next
     end
@@ -357,21 +429,22 @@ def chute_extra_pieces(name, container, extra)
   thrown
 end
 
-# Throws a stashed piece of marathon stock down the chute instead of
-# bringing it back: :chuted, :missing, :wrong or :failed, as fetch says
+# Throws a stashed piece of marathon stock out instead of bringing it back:
+# :chuted, :missing, :wrong or :failed, as fetch says
 def chute_stashed(entry)
   name = entry['name']
-  result = get_from_vault(name)
+  store = store_of(entry)
+  result = get_from_vault(name, store)
   return :missing if GET_MISSING.any? { |pattern| result =~ pattern }
   return :failed unless settle { !hands_empty? }
 
   unless right_item?(result, name)
-    put_back(name)
+    put_back(name, store)
     return :wrong
   end
-  return :chuted if stock_down_chute?(name)
+  return :chuted if stock_thrown_out?(name)
 
-  put_back(name)
+  put_back(name, store)
   :failed
 end
 
@@ -437,26 +510,49 @@ container = settings.crafting_container
 results = Hash.new { |hash, result| hash[result] = [] }
 marathon = asked_for == 'marathon'
 full = false
+# Lich keeps instance variables from one run to the next
+@vault_steps = []
+
+# Newest first. An entry can come back while another one is being asked for
+# (fetch), so they're tracked by which object they are, not where in the list.
+pending = stash_list.select { |entry| wanted?(entry, groups, materials) }.reverse
+done = []
+forget = lambda do |gone|
+  done << gone
+  stash_list.delete_if { |listed| listed.equal?(gone) }
+  save_stash_list(stash_list)
+end
+
+# ;unstash marathon: the gear first, then one piece of each stock
+stock = []
+stock, pending = pending.partition { |entry| material?(entry) } if marathon
+
+# The Eddy's things come out where you stand, once its portal's been looked in
+words = nil
+if (pending + stock).any? { |entry| store_of(entry) == :eddy }
+  words = eddy_words
+  unless words
+    unreached = (pending + stock).select { |entry| store_of(entry) == :eddy }
+    results[:unreached] = unreached.map { |entry| entry['name'] || entry['item'] }
+    pending.reject! { |entry| store_of(entry) == :eddy }
+    stock.reject! { |entry| store_of(entry) == :eddy }
+  end
+end
 
 begin
-  exit unless open_vault(settings)
-
-  # Newest first. An entry can come back while another one is being asked for
-  # (fetch), so they're tracked by which object they are, not where in the list.
-  pending = stash_list.select { |entry| wanted?(entry, groups, materials) }.reverse
-  done = []
-  forget = lambda do |gone|
-    done << gone
-    stash_list.delete_if { |listed| listed.equal?(gone) }
-    save_stash_list(stash_list)
+  # The vault only for what's in it. If it won't open, the Eddy's things
+  # still come back.
+  in_vault = (pending + stock).select { |entry| store_of(entry) == :vault }
+  unless in_vault.empty? || open_vault(settings)
+    results[:vault_shut] = in_vault.map { |entry| entry['name'] || entry['item'] }
+    pending.reject! { |entry| in_vault.any? { |each| each.equal?(entry) } }
+    stock.reject! { |entry| in_vault.any? { |each| each.equal?(entry) } }
   end
 
-  # ;unstash marathon: the extra pieces in the crafting bag go down the chute
-  # first, to make room, then the gear comes back, then one piece of each stock
-  stock = []
+  # ;unstash marathon: the extra pieces in the crafting bag are thrown out
+  # first, to make room
   on_hand = {}
   if marathon
-    stock, pending = pending.partition { |entry| material?(entry) }
     STOCK_NAMES.each do |name|
       pieces = DRCI.count_items_in_container(name, container)
       on_hand[name] = pieces.positive?
@@ -475,7 +571,9 @@ begin
       results[:got] << other['name']
       forget.call(other)
     end
-    results[result] << (entry['name'] || entry['item'])
+    # Not found in the Eddy, but LOOK showed something by its noun: kept
+    result = :unfound if result == :missing && store_of(entry) == :eddy && !eddy_gone?(entry, words)
+    results[result == :missing && store_of(entry) == :eddy ? :missing_eddy : result] << (entry['name'] || entry['item'])
     if result == :container_full
       full = true
       break
@@ -490,7 +588,8 @@ begin
 
     entries.each do |entry|
       result = on_hand[name] ? chute_stashed(entry) : fetch(entry, container)
-      results[result] << entry['name']
+      result = :unfound if result == :missing && store_of(entry) == :eddy && !eddy_gone?(entry, words)
+      results[result == :missing && store_of(entry) == :eddy ? :missing_eddy : result] << entry['name']
       if result == :container_full
         full = true
         break
@@ -506,9 +605,13 @@ end
 DRC.message("unstash: got back: #{results[:got].join(', ')}") unless results[:got].empty?
 unless results[:chuted].empty?
   thrown = results[:chuted].tally.map { |name, count| count > 1 ? "#{name} (#{count})" : name }.join(', ')
-  DRC.message("unstash: one piece of each is enough for the marathon, so threw down the vault's garbage chute: #{thrown}")
+  DRC.message("unstash: one piece of each is enough for the marathon, so threw out: #{thrown}")
 end
+DRC.message("unstash: not in the Eddy anymore, dropped from the list: #{results[:missing_eddy].join(', ')}") unless results[:missing_eddy].empty?
 DRC.message("unstash: not in the vault anymore, dropped from the list: #{results[:missing].join(', ')}") unless results[:missing].empty?
+DRC.message("unstash: GET didn't find these in the Eddy, but its LOOK shows something like them, so kept on the list: #{results[:unfound].join(', ')}") unless results[:unfound].empty?
+DRC.message("unstash: couldn't open your Eddy and look in its portal here, so these stay in it and on the list: #{results[:unreached].join(', ')}") unless results[:unreached].empty?
+DRC.message("unstash: the vault didn't open, so these stay in it and on the list: #{results[:vault_shut].join(', ')}") unless results[:vault_shut].empty?
 DRC.message("unstash: found something else first, left it and kept on the list: #{results[:wrong].join(', ')}") unless results[:wrong].empty?
 DRC.message("unstash: couldn't pick up, kept on the list: #{results[:failed].join(', ')}") unless results[:failed].empty?
-DRC.message("unstash: no room to put #{results[:container_full].first} away. #{stash_list.count { |entry| wanted?(entry, groups, materials) }} item(s) still in the vault and on the list.") unless results[:container_full].empty?
+DRC.message("unstash: no room to put #{results[:container_full].first} away. #{stash_list.count { |entry| wanted?(entry, groups, materials) }} item(s) still stashed and on the list.") unless results[:container_full].empty?

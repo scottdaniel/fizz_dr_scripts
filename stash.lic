@@ -1,9 +1,15 @@
 =begin
   stash.lic
 
-  Puts things from your containers in your vault at your hometown's Carousel
+  Puts things from your containers in your Eddy, the effervescent eddy you
+  wear (a portable vault: 250 things, 1700 stones), right where you stand.
+  ;unstash gets it all back. Without an Eddy, or for what it won't take
+  (full, or too big), it's your vault at your hometown's Carousel instead
   (Crossing: ;go2 8285, through an arch, PULL LEVER, GO DOOR, OPEN VAULT),
-  then closes it and leaves you in the Carousel. ;unstash gets it all back.
+  and then it closes the vault and leaves you in the Carousel. Weapons go in
+  the Eddy too: ;unstash weapons, at the start of t2's hunt block, puts them
+  back where combat-trainer keeps them. ;vault-to-eddy moved the vault's
+  things into the Eddy (2026-11-27).
 
   Usage:
     ;stash crafting        # forging, shaping, enchanting, outfitting and alchemy gear and materials
@@ -35,8 +41,9 @@
   it's in. A weapon harness isn't looked in: only weapons are tied to it.
   Sigil-scrolls stay with you, for the next artificing order to use.
 
-  Except coal nuggets: they go down the vault's garbage chute instead (TRASH
-  below). remedy and taskmaster buy one whenever none is on hand, and the
+  Except coal nuggets: they're thrown out instead (TRASH below), into a bin
+  if the room has one or else dropped, or down the vault's garbage chute at
+  the vault. remedy and taskmaster buy one whenever none is on hand, and the
   marathon never uses one. The marathon's stock (burlap cloth, rat-pelt
   leather, wool yarn, cotton thread) is stashed like any other material, and
   ;unstash marathon brings it back with the outfitting tools.
@@ -44,24 +51,27 @@
   Weapons are the ones named in your yaml's weapon_training. Each comes out
   of wherever your yaml's gear list says it's kept, the way combat-trainer
   gets it: taken off if you wear it, off its harness, out of its sheath or
-  container. ;unstash weapons puts them back the way combat-trainer does
-  after a hunt (worn again if your standard gear set wears it).
+  container. They go in the Eddy like everything else, or the vault for
+  what the Eddy won't take. ;unstash weapons puts them back the way
+  combat-trainer does after a hunt (worn again if your standard gear set
+  wears it). t2's hunt block runs it before every hunt, and it does nothing
+  when no weapons are stashed.
 
   Extras are your own list, kept in EXTRAS. It starts as codex, textbook and
   contract. Every one of them you're carrying gets stashed, from whichever
   container it's in.
 
-  If the vault is full, the rest stays where it is. If rent is due, nothing
-  happens: pay at the Carousel desk first (GO DESK, 5,000 Kronars for 30
-  days).
+  If the Eddy is full, the rest goes to the vault. If the vault is full too,
+  the rest stays where it is. If rent is due, nothing goes to the vault: pay
+  at the Carousel desk first (GO DESK, 5,000 Kronars for 30 days).
 
   What went in is written to STASHED so ;unstash gets back exactly those
   things and puts them back where they came from. Each one is written down
-  with what it's for (forging, shaping, enchanting, outfitting, alchemy,
-  weapons or extras), so
+  with where it went (in: eddy, or the vault) and what it's for (forging,
+  shaping, enchanting, outfitting, alchemy, weapons or extras), so
   ;unstash forging and the like get back just that. Materials are marked as
-  materials: ;unstash crafting and ;unstash forging leave them in the vault,
-  and ;unstash materials gets them.
+  materials: ;unstash crafting and ;unstash forging leave them stashed, and
+  ;unstash materials gets them.
 =end
 
 # What's stashed right now. Shared with unstash.
@@ -151,8 +161,8 @@ MATERIALS = {
   'alchemy'    => {}
 }.freeze
 
-# Materials not worth keeping, which go down the vault's garbage chute
-# instead of into the vault: remedy and taskmaster buy a coal nugget whenever
+# Materials not worth keeping, which are thrown out instead of stashed (down
+# the vault's garbage chute at the vault): remedy and taskmaster buy a coal nugget whenever
 # none is on hand, and the marathon never uses one (2026-11-18). Only coal:
 # a gold nugget is a keeper.
 #
@@ -174,6 +184,24 @@ DEED_FOR = /\Adeed for (?:an?|some) (?:.+ )?(\S+) (\S+)\z/i
 
 # storage_containers that can't hold materials, so aren't looked in
 NOT_LOOKED_IN = /\bharness\b/i
+
+# The Eddy, from Fizzlestiks's first look at it (2026-11-27): you PUT things
+# in the eddy, and GET and LOOK through its portal ("LOOK IN PORTAL -or LOOK
+# IN WATERY PORTAL"). Always "my": LOOK IN PORT at the Strand looked in the
+# meeting portal there. GET finds nothing until you LOOK in the portal
+# (DRCI's get_item_from_eddy_portal? says so too). The same in unstash and
+# vault-to-eddy.
+EDDY = 'my eddy'
+EDDY_PORTAL = 'my portal'
+EDDY_OPENED = [/^You open/, /already open/i].freeze
+EDDY_LOOKED = [/^In the .*/, /nothing in there/i].freeze
+EDDY_UNREACHABLE = [/^What were you referring to/, /^I could not find/, /^I don't know what you are referring to/,
+                    /funnel downward/, /^You can't/, /interfer/i].freeze
+# "There isn't any more room in the eddy for that." (dr-scripts' own tests).
+# The weight limit's message isn't known yet, so those are guesses.
+EDDY_FULL = [/isn't any more room/i, /too heavy/i, /\bweight\b/i, /too many/i, /\bfull\b/i].freeze
+# Just this one won't go in ("fit within the eddy container's dimensions")
+EDDY_REFUSED = [/^You can't/, /^You must/, /\bfit\b/i, /too (?:big|large|long|wide|tall)/i, /^That's/, /^What were you referring to/].freeze
 
 # Getting in and out of the vault, as Fizzlestiks did it at the Crossing
 # Carousel on 2026-11-07 and 11-08. Plain GO ARCH is the platinum arch, which
@@ -434,6 +462,37 @@ def into_chute?(item)
   DRC.bput("put my #{item} in chute", *CHUTE_DROPPED, *NOT_FOUND, *PUT_FAILURE) =~ CHUTE_DROPPED.first && settle { hands_empty? }
 end
 
+# Throws out what's in hand: down the chute at the vault, else into a bin if
+# the room has one, or dropped (DRCI.dispose_trash)
+def throw_away?(item, store)
+  return into_chute?(item) if store == :vault
+
+  DRCI.dispose_trash(item) && settle { hands_empty? }
+end
+
+# Opens the Eddy and LOOKs in its portal, which GET needs first. False if
+# you don't have one or can't reach it here.
+def eddy_ready?
+  opened = DRC.bput("open #{EDDY}", *EDDY_OPENED, *EDDY_UNREACHABLE)
+  return false unless EDDY_OPENED.any? { |pattern| opened =~ pattern }
+
+  looked = DRC.bput("look in #{EDDY_PORTAL}", *EDDY_LOOKED, *EDDY_UNREACHABLE)
+  EDDY_LOOKED.any? { |pattern| looked =~ pattern }
+end
+
+# Puts what's in hand in the Eddy or the vault: :put, :full, or :failed. In
+# the Eddy, empty hands after are what count, as its messages aren't all
+# known yet.
+def put_in_store(item, store)
+  return put_in_vault(item) if store == :vault
+
+  result = DRC.bput("put my #{item} in #{EDDY}", *PUT_SUCCESS, *EDDY_FULL, *EDDY_REFUSED)
+  return :put if settle { hands_empty? }
+  return :full if EDDY_FULL.any? { |pattern| result =~ pattern }
+
+  :failed
+end
+
 # Gets the item into your hand, from the container if one is given. Returns
 # the GET line, or nil if you don't have one.
 def take_out(item, container)
@@ -479,97 +538,131 @@ def stash_items(gear, extras, settings, material_disciplines = [])
   end
 
   stashed = load_yaml(STASHED, [])
-  put = []
-  left_over = []
-  missed = []
-  failed = []
+  results = Hash.new { |hash, key| hash[key] = [] }
   taken = []
-  trashed = []
-  full = false
 
-  begin
-    exit unless open_vault(settings)
-
-    jobs.each do |item, used_for, take_from, just_one, seen_as|
-      if full
-        left_over << item if DRCI.exists?(item, take_from)
-        next
+  # Into the Eddy if you have one here. What it won't take goes to the vault.
+  rest = eddy_ready? ? stash_jobs(jobs, :eddy, stashed, results, taken, settings, material_disciplines) : jobs
+  unless rest.empty?
+    begin
+      if open_vault(settings)
+        stash_jobs(rest, :vault, stashed, results, taken, settings, material_disciplines)
+      else
+        results[:vault_shut] = rest.map(&:first)
       end
-
-      got_any = false
-      # A material that doesn't answer to its usual name gets the other
-      # names to try (material_addresses); gear and extras have just the one
-      addresses = seen_as ? material_addresses(item, seen_as) : [item]
-      address = addresses.shift
-      loop do
-        line = take_out(address, take_from)
-        unless line
-          break if got_any || addresses.empty?
-
-          address = addresses.shift
-          next
-        end
-        from = line[GET_SOURCE, 1] || take_from
-        name = line[GET_NAME, 1]
-        if seen_as && !stashable_material?(name, material_disciplines)
-          put_back(address, from, container)
-          break
-        end
-        got_any = true
-        # Coal nuggets go down the chute, not into the vault or onto the list
-        if seen_as && name =~ TRASH_PATTERN
-          unless into_chute?(address)
-            failed << name
-            put_back(address, from, container)
-            break
-          end
-          trashed << name
-          taken << name.to_s.downcase
-          next
-        end
-        case put_in_vault(address)
-        when :put
-          put << (seen_as && name ? name : address)
-          taken << look_name(name).downcase
-          # A copy of used_for each time: two codices sharing one array would
-          # be written as a YAML alias, which safe_load refuses to read back.
-          # A material is for what its own name says, and ;unstash asks for it
-          # by its own last two words first ("titanese cloth", not the "thin
-          # cloth" that found it), as a looser name may have found another one.
-          uses = seen_as ? material_uses(look_name(name)) : used_for.dup
-          address_for_unstash = seen_as && name ? look_name(name).split.last(2).join(' ') : vault_address(address, name)
-          entry = { 'item' => address_for_unstash, 'name' => name, 'from' => from, 'for' => uses }
-          # ;unstash crafting leaves these in the vault; ;unstash materials gets them
-          entry['kind'] = 'materials' if seen_as
-          stashed << entry
-          save_yaml(STASHED, stashed)
-          break if just_one
-        when :full
-          full = true
-          left_over << address
-          put_back(address, from, container)
-          break
-        else
-          failed << (name || address)
-          put_back(address, from, container)
-          break
-        end
-      end
-      # One GET can take several things LOOK listed apart ("electroweave
-      # cloth" takes the thin and thick ones too), so only one that nothing
-      # took is a miss
-      missed << "#{seen_as} (#{take_from})" if seen_as && !got_any && !taken.include?(seen_as.downcase)
+    ensure
+      leave_vault
     end
-  ensure
-    leave_vault
   end
 
-  DRC.message("stash: put in your vault: #{put.join(', ')}") unless put.empty?
-  DRC.message("stash: threw down the vault's garbage chute: #{trashed.join(', ')}") unless trashed.empty?
-  DRC.message('stash: nothing to stash.') if put.empty? && trashed.empty? && left_over.empty? && missed.empty? && failed.empty?
-  DRC.message("stash: the vault is full, kept: #{left_over.uniq.join(', ')}") unless left_over.empty?
-  DRC.message("stash: the vault wouldn't take these, kept them: #{failed.join(', ')}") unless failed.empty?
-  DRC.message("stash: saw these but GET couldn't pick them up: #{missed.join(', ')}") unless missed.empty?
+  DRC.message("stash: put in your Eddy: #{results[:eddy].join(', ')}") unless results[:eddy].empty?
+  DRC.message("stash: the Eddy wouldn't take these, so they went to the vault: #{results[:eddy_refused].uniq.join(', ')}") unless results[:eddy_refused].empty?
+  DRC.message('stash: the Eddy is full, so the rest went to the vault.') unless results[:eddy_full].empty?
+  DRC.message("stash: put in your vault: #{results[:vault].join(', ')}") unless results[:vault].empty?
+  DRC.message("stash: threw out: #{results[:trashed].join(', ')}") unless results[:trashed].empty?
+  if %i[eddy vault trashed left_over missed failed vault_shut].all? { |key| results[key].empty? }
+    DRC.message('stash: nothing to stash.')
+  end
+  DRC.message("stash: the vault didn't open, so these stay with you: #{results[:vault_shut].uniq.join(', ')}") unless results[:vault_shut].empty?
+  DRC.message("stash: the vault is full, kept: #{results[:left_over].uniq.join(', ')}") unless results[:left_over].empty?
+  DRC.message("stash: the vault wouldn't take these, kept them: #{results[:failed].join(', ')}") unless results[:failed].empty?
+  DRC.message("stash: saw these but GET couldn't pick them up: #{results[:missed].join(', ')}") unless results[:missed].empty?
+end
+
+# Puts each job's things in the Eddy (store :eddy) or the vault (:vault),
+# writing each down in stashed. Returns the jobs the Eddy wouldn't take, all
+# of them from the first one it was full for, so they go to the vault.
+def stash_jobs(jobs, store, stashed, results, taken, settings, material_disciplines)
+  container = settings.crafting_container
+  rest = []
+  full = false
+  jobs.each do |job|
+    item, used_for, take_from, just_one, seen_as = job
+    if full
+      if store == :eddy
+        rest << job
+      elsif DRCI.exists?(item, take_from)
+        results[:left_over] << item
+      end
+      next
+    end
+
+    got_any = false
+    # A material that doesn't answer to its usual name gets the other
+    # names to try (material_addresses); gear and extras have just the one
+    addresses = seen_as ? material_addresses(item, seen_as) : [item]
+    address = addresses.shift
+    loop do
+      line = take_out(address, take_from)
+      unless line
+        break if got_any || addresses.empty?
+
+        address = addresses.shift
+        next
+      end
+      from = line[GET_SOURCE, 1] || take_from
+      name = line[GET_NAME, 1]
+      if seen_as && !stashable_material?(name, material_disciplines)
+        put_back(address, from, container)
+        break
+      end
+      got_any = true
+      # Coal nuggets are thrown out, not stashed or listed
+      if seen_as && name =~ TRASH_PATTERN
+        unless throw_away?(address, store)
+          results[:failed] << name
+          put_back(address, from, container)
+          break
+        end
+        results[:trashed] << name
+        taken << name.to_s.downcase
+        next
+      end
+      case put_in_store(address, store)
+      when :put
+        results[store] << (seen_as && name ? name : address)
+        taken << look_name(name).downcase
+        # A copy of used_for each time: two codices sharing one array would
+        # be written as a YAML alias, which safe_load refuses to read back.
+        # A material is for what its own name says, and ;unstash asks for it
+        # by its own last two words first ("titanese cloth", not the "thin
+        # cloth" that found it), as a looser name may have found another one.
+        uses = seen_as ? material_uses(look_name(name)) : used_for.dup
+        address_for_unstash = seen_as && name ? look_name(name).split.last(2).join(' ') : vault_address(address, name)
+        entry = { 'item' => address_for_unstash, 'name' => name, 'from' => from, 'for' => uses }
+        # ;unstash crafting leaves these stashed; ;unstash materials gets them
+        entry['kind'] = 'materials' if seen_as
+        entry['in'] = 'eddy' if store == :eddy
+        stashed << entry
+        save_yaml(STASHED, stashed)
+        break if just_one
+      when :full
+        full = true
+        put_back(address, from, container)
+        if store == :eddy
+          results[:eddy_full] << address
+          rest << job
+        else
+          results[:left_over] << address
+        end
+        break
+      else
+        put_back(address, from, container)
+        if store == :eddy
+          results[:eddy_refused] << (name || address)
+          rest << job
+        else
+          results[:failed] << (name || address)
+        end
+        break
+      end
+    end
+    # One GET can take several things LOOK listed apart ("electroweave
+    # cloth" takes the thin and thick ones too), so only one that nothing
+    # took is a miss
+    results[:missed] << "#{seen_as} (#{take_from})" if seen_as && !got_any && !taken.include?(seen_as.downcase)
+  end
+  rest
 end
 
 # The weapons in your yaml's weapon_training, each once (the gilt dagger is
@@ -597,8 +690,9 @@ end
 # ;stash weapons, for when you're not hunting. Each weapon comes out of
 # wherever it's kept, the way combat-trainer gets it: taken off if you wear
 # it (the voulge, the knuckles), off its harness (the throwing club, the
-# staff), out of its sheath or container. ;unstash weapons puts each back the
-# same way combat-trainer does after a hunt.
+# staff), out of its sheath or container. They go in the Eddy, or the vault
+# for what the Eddy won't take. ;unstash weapons puts each back the same way
+# combat-trainer does after a hunt, and t2's hunt block runs it first.
 def stash_weapons(settings)
   unless hands_empty?
     DRC.message('stash: empty your hands first.')
@@ -613,46 +707,70 @@ def stash_weapons(settings)
   end
 
   stashed = load_yaml(STASHED, [])
-  put = []
-  not_found = []
-  kept = []
-  full = false
+  results = Hash.new { |hash, key| hash[key] = [] }
 
-  begin
-    exit unless open_vault(settings)
-
-    weapons.each do |description, weapon|
-      if full
-        kept << description
-        next
-      end
-      unless manager.get_item?(weapon) && settle { !hands_empty? }
-        not_found << description
-        next
-      end
-
-      result = put_in_vault(weapon.short_name)
-      if result == :put
-        put << description
-        # No name: the GET line from the vault gives the full description,
-        # which the yaml doesn't have, so ;unstash takes the weapon by
-        # short_name without checking it
-        stashed << { 'item' => weapon.short_name, 'name' => nil, 'from' => 'gear', 'for' => ['weapons'] }
-        save_yaml(STASHED, stashed)
+  eddy = eddy_ready?
+  rest = eddy ? weapons_into(weapons, :eddy, manager, stashed, results) : weapons
+  eddy_left = rest.map(&:first)
+  unless rest.empty?
+    begin
+      if open_vault(settings)
+        results[:kept] = weapons_into(rest, :vault, manager, stashed, results).map(&:first)
       else
-        full = result == :full
-        kept << description
-        return_weapon(manager)
+        results[:vault_shut] = rest.map(&:first)
       end
+    ensure
+      leave_vault
     end
-  ensure
-    leave_vault
   end
 
-  DRC.message("stash: put in your vault: #{put.join(', ')}") unless put.empty?
-  DRC.message("stash: #{full ? 'the vault is full, kept' : "the vault wouldn't take these, kept them"}: #{kept.join(', ')}") unless kept.empty?
-  DRC.message("stash: couldn't find these to stash: #{not_found.join(', ')}") unless not_found.empty?
-  DRC.message('stash: ;unstash weapons gets them back before you hunt.') unless put.empty?
+  DRC.message("stash: put in your Eddy: #{results[:eddy].join(', ')}") unless results[:eddy].empty?
+  if eddy && !eddy_left.empty?
+    DRC.message("stash: #{results[:eddy_full].empty? ? "the Eddy wouldn't take these" : 'the Eddy is full, so it didn\'t take these'}: #{eddy_left.join(', ')}")
+  end
+  DRC.message("stash: put in your vault: #{results[:vault].join(', ')}") unless results[:vault].empty?
+  DRC.message("stash: #{results[:vault_full].empty? ? "the vault wouldn't take these" : 'the vault is full'}, kept them: #{results[:kept].join(', ')}") unless results[:kept].empty?
+  DRC.message("stash: the vault didn't open, so these stay with you: #{results[:vault_shut].join(', ')}") unless results[:vault_shut].empty?
+  DRC.message("stash: couldn't find these to stash: #{results[:not_found].join(', ')}") unless results[:not_found].empty?
+  DRC.message('stash: ;unstash weapons gets them back before you hunt.') unless results[:eddy].empty? && results[:vault].empty?
+end
+
+# Puts each weapon in the Eddy (store :eddy) or the vault, writing it down.
+# One the store won't take goes back where it's kept, and it and the rest
+# are returned, all of them from the first one the store was full for.
+def weapons_into(weapons, store, manager, stashed, results)
+  rest = []
+  full = false
+  weapons.each do |description, weapon|
+    if full
+      rest << [description, weapon]
+      next
+    end
+    unless manager.get_item?(weapon) && settle { !hands_empty? }
+      results[:not_found] << description
+      next
+    end
+
+    result = put_in_store(weapon.short_name, store)
+    if result == :put
+      results[store] << description
+      # No name: the GET line gives the full description, which the yaml
+      # doesn't have, so ;unstash takes the weapon by short_name without
+      # checking it
+      entry = { 'item' => weapon.short_name, 'name' => nil, 'from' => 'gear', 'for' => ['weapons'] }
+      entry['in'] = 'eddy' if store == :eddy
+      stashed << entry
+      save_yaml(STASHED, stashed)
+    else
+      if result == :full
+        full = true
+        results[:"#{store}_full"] << description
+      end
+      rest << [description, weapon]
+      return_weapon(manager)
+    end
+  end
+  rest
 end
 
 def add_extra(item)
@@ -704,7 +822,7 @@ def show_list(gear, settings)
     DRC.message("stash: #{discipline} (;stash #{discipline}): #{tools.empty? ? 'no gear' : tools.join(', ')}" \
                 "#{", plus any #{materials.join(', ')}" unless materials.empty?}")
   end
-  DRC.message("stash: thrown down the vault's garbage chute instead of stashed: #{TRASH.join(', ')}")
+  DRC.message("stash: thrown out instead of stashed: #{TRASH.join(', ')}")
   weapons = settings.weapon_training.to_h.values.compact.uniq
   DRC.message("stash: weapons (;stash weapons): #{weapons.empty? ? 'none' : weapons.join(', ')}")
   extras = load_extras
@@ -716,10 +834,10 @@ def show_list(gear, settings)
     return
   end
 
-  stashed.group_by { |entry| [entry['for'].to_a.join('/'), entry['kind']] }.each do |(used_for, kind), entries|
+  stashed.group_by { |entry| [entry['in'], entry['for'].to_a.join('/'), entry['kind']] }.each do |(store, used_for, kind), entries|
     names = entries.map { |entry| entry['name'] || entry['item'] }
     what = [kind, ("for #{used_for}" unless used_for.empty?)].compact.join(' ')
-    DRC.message("stash: in your vault#{" (#{what})" unless what.empty?}: #{names.join(', ')}")
+    DRC.message("stash: in your #{store == 'eddy' ? 'Eddy' : 'vault'}#{" (#{what})" unless what.empty?}: #{names.join(', ')}")
   end
   DRC.message('stash: ;unstash gets it all back. ;unstash forging, shaping, enchanting, outfitting, alchemy, crafting, weapons or extras ' \
               'gets just that, without materials (;unstash crafting forging is the same as ;unstash forging); ' \
