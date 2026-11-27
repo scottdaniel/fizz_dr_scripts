@@ -45,9 +45,10 @@
     ;unstash alchemy            # just alchemy gear
     ;unstash materials          # just the crafting materials
     ;unstash materials forging  # just forging's materials (or shaping, and so on)
-    ;unstash marathon           # before ;taskmaster marathon: outfitting gear, plus the burlap cloth,
-                                #   rat-pelt leather, wool yarn and cotton thread it sews and knits from
-                                #   (not the rare cloths and leathers), so the marathon doesn't buy them again
+    ;unstash marathon           # before ;taskmaster marathon: outfitting gear, plus one piece each of the
+                                #   burlap cloth, rat-pelt leather, wool yarn and cotton thread it sews and
+                                #   knits from (not the rare cloths and leathers); the other pieces go down
+                                #   the vault's garbage chute
     ;unstash weapons            # just your weapons, back where combat-trainer keeps them
     ;unstash extras             # just your extras
 =end
@@ -64,6 +65,20 @@ GROUPS = (CRAFTING + %w[weapons extras]).freeze
 # carry, so stock left in the vault was bought again (2026-11-18). Only these
 # four: rare cloths and leathers stay in the vault.
 MARATHON_STOCK = /\b(?:burlap cloth|rat-pelt leather|wool yarn|cotton thread)$/i
+
+# Of that stock, ;unstash marathon brings back one piece of each and throws
+# every other piece down the vault's garbage chute, the stashed ones and the
+# extras in your crafting_container alike (they go first, to make room). A
+# stock the crafting_container has a piece of already comes back as none.
+# taskmaster COUNTs only one piece of each and tops it up (cloth and leather
+# to 100 yards, yarn and thread to 400, as much as a spool holds), so more
+# pieces are only weight. On 2026-11-26 it brought back 23 of 31 wool yarns,
+# most of them left over from work orders. Then the grey rucksack was "too
+# heavy" for the burlap cloth, and taskmaster stopped holding burlap it had
+# bought and couldn't put away. The user chose to throw the extras out:
+# "it's really cheap materials".
+STOCK_CHUTED = /^You drop .* into the garbage chute/
+STOCK_NAMES = ['burlap cloth', 'rat-pelt leather', 'wool yarn', 'cotton thread'].freeze
 
 # How many times one name is asked for while it keeps handing over other
 # things of yours this unstash also wants
@@ -313,6 +328,53 @@ def material?(entry)
   entry['kind'] == 'materials'
 end
 
+# Drops what's in hand down the vault's garbage chute (named apart from
+# ;stash's and ;trash-sort's, whose methods are shared with this one)
+def stock_down_chute?(name)
+  DRC.bput("put my #{name} in chute", STOCK_CHUTED, *NOT_FOUND, /^You can't/) =~ STOCK_CHUTED && settle { hands_empty? }
+end
+
+# Throws away +extra+ pieces of a marathon stock from the crafting_container,
+# always the second one, so the first stays. Returns how many went down the
+# chute.
+def chute_extra_pieces(name, container, extra)
+  thrown = 0
+  extra.times do
+    result = DRC.bput("get second #{name} from my #{container}", *GET_SUCCESS, *GET_MISSING, *DRCI::GET_ITEM_FAILURE_PATTERNS)
+    break unless GET_SUCCESS.any? { |pattern| result =~ pattern } && settle { !hands_empty? }
+
+    if right_item?(result, name) && stock_down_chute?(name)
+      thrown += 1
+      next
+    end
+    held = DRC.right_hand || DRC.left_hand
+    unless DRCI.put_away_item?(held.to_s.split.last, container) && settle { hands_empty? }
+      DRC.message("unstash: couldn't put #{held} back in your #{container}. It's still in your hand.")
+      exit
+    end
+    break
+  end
+  thrown
+end
+
+# Throws a stashed piece of marathon stock down the chute instead of
+# bringing it back: :chuted, :missing, :wrong or :failed, as fetch says
+def chute_stashed(entry)
+  name = entry['name']
+  result = get_from_vault(name)
+  return :missing if GET_MISSING.any? { |pattern| result =~ pattern }
+  return :failed unless settle { !hands_empty? }
+
+  unless right_item?(result, name)
+    put_back(name)
+    return :wrong
+  end
+  return :chuted if stock_down_chute?(name)
+
+  put_back(name)
+  :failed
+end
+
 # groups nil means everything, materials and anything stashed before ;stash
 # wrote down what it's for. Otherwise the entry has to be for one of the
 # groups, and be a material if materials is true, or not one if it's false.
@@ -373,6 +435,8 @@ end
 settings = get_settings
 container = settings.crafting_container
 results = Hash.new { |hash, result| hash[result] = [] }
+marathon = asked_for == 'marathon'
+full = false
 
 begin
   exit unless open_vault(settings)
@@ -386,6 +450,20 @@ begin
     stash_list.delete_if { |listed| listed.equal?(gone) }
     save_stash_list(stash_list)
   end
+
+  # ;unstash marathon: the extra pieces in the crafting bag go down the chute
+  # first, to make room, then the gear comes back, then one piece of each stock
+  stock = []
+  on_hand = {}
+  if marathon
+    stock, pending = pending.partition { |entry| material?(entry) }
+    STOCK_NAMES.each do |name|
+      pieces = DRCI.count_items_in_container(name, container)
+      on_hand[name] = pieces.positive?
+      results[:chuted].concat([name] * chute_extra_pieces(name, container, pieces - 1)) if pieces > 1
+    end
+  end
+
   pending.each do |entry|
     next if done.any? { |gone| gone.equal?(entry) }
 
@@ -398,16 +476,38 @@ begin
       forget.call(other)
     end
     results[result] << (entry['name'] || entry['item'])
-    break if result == :container_full
+    if result == :container_full
+      full = true
+      break
+    end
     next unless %i[got missing].include?(result)
 
     forget.call(entry)
+  end
+
+  stock.group_by { |entry| entry['name'].downcase }.each do |name, entries|
+    break if full
+
+    entries.each do |entry|
+      result = on_hand[name] ? chute_stashed(entry) : fetch(entry, container)
+      results[result] << entry['name']
+      if result == :container_full
+        full = true
+        break
+      end
+      on_hand[name] ||= result == :got
+      forget.call(entry) if %i[got missing chuted].include?(result)
+    end
   end
 ensure
   leave_vault
 end
 
 DRC.message("unstash: got back: #{results[:got].join(', ')}") unless results[:got].empty?
+unless results[:chuted].empty?
+  thrown = results[:chuted].tally.map { |name, count| count > 1 ? "#{name} (#{count})" : name }.join(', ')
+  DRC.message("unstash: one piece of each is enough for the marathon, so threw down the vault's garbage chute: #{thrown}")
+end
 DRC.message("unstash: not in the vault anymore, dropped from the list: #{results[:missing].join(', ')}") unless results[:missing].empty?
 DRC.message("unstash: found something else first, left it and kept on the list: #{results[:wrong].join(', ')}") unless results[:wrong].empty?
 DRC.message("unstash: couldn't pick up, kept on the list: #{results[:failed].join(', ')}") unless results[:failed].empty?
